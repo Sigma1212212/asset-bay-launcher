@@ -439,6 +439,7 @@ public sealed partial class LauncherForm : Form
     {
         base.OnMouseMove(e);
         if (pressed?.Slider == true) { DragSlider(pressed, e.Location); return; } // keep following the mouse
+        LayoutMouseMove(e.Location);
         var hit = HitTest(e.Location);
         if (hit != hovered)
         {
@@ -457,6 +458,7 @@ public sealed partial class LauncherForm : Form
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        if (LayoutMouseDown(e.Location)) return;
         var hit = HitTest(e.Location);
         if (hit?.Slider == true)
         {
@@ -479,6 +481,7 @@ public sealed partial class LauncherForm : Form
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        LayoutMouseUp();
         var hit = HitTest(e.Location);
         if (pressed != null && !pressed.Slider && hit == pressed && pressed.IsEnabled) pressed.Click?.Invoke();
         pressed = null;

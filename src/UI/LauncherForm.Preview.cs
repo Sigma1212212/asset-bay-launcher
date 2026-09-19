@@ -19,6 +19,7 @@ public sealed partial class LauncherForm
         if (page != Page.Designer || previewArea.Width < 50) return;
         var d = design;
         if (designerTab == 1) { DrawKeyStudio(g, d); return; }
+        if (designerTab == 2) { DrawLayoutCanvas(g); return; }
 
         // Panel size in menu units, then scaled to fit the space we have.
         bool book = d.Style == 6;

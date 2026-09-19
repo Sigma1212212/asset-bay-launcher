@@ -257,6 +257,10 @@ public sealed partial class LauncherForm
                 using var second = new Bitmap(W, H);
                 using (var g = Graphics.FromImage(second)) OnPaint(new PaintEventArgs(g, new Rectangle(0, 0, W, H)));
                 second.Save(Path.Combine(folder, "launcher_Designer_Buttons.png"));
+                designerTab = 2;
+                using var third = new Bitmap(W, H);
+                using (var g = Graphics.FromImage(third)) OnPaint(new PaintEventArgs(g, new Rectangle(0, 0, W, H)));
+                third.Save(Path.Combine(folder, "launcher_Designer_Layout.png"));
                 designerTab = 0;
             }
         }

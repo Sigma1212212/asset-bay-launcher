@@ -24,14 +24,14 @@ public sealed partial class LauncherForm
         float lx = ContentX, mx = ContentX + colW + 10;
         previewArea = new RectangleF(mx + colW + 16, ContentY, ContentW - (colW + 10) - (colW + 16), H - 24 - ContentY);
         int order = 0;
-        float tabW = (colW * 2 + 10) / 2f;
-        for (int i = 0; i < 2; i++)
+        float tabW = (colW * 2 + 10) / 3f;
+        for (int i = 0; i < 3; i++)
         {
             int index = i;
             widgets.Add(new Widget
             {
                 Rect = new RectangleF(lx + i * tabW, ContentY, tabW - 4, 28), Page = p, Order = -1, Small = true,
-                Label = i == 0 ? "Panel" : "Buttons", Selected = () => designerTab == index,
+                Label = i == 0 ? "Panel" : i == 1 ? "Buttons" : "Layout", Selected = () => designerTab == index,
                 Click = () => { designerTab = index; Invalidate(); },
             });
         }
@@ -122,6 +122,8 @@ public sealed partial class LauncherForm
             () => (design.TitleStyle & 8) != 0 ? ((design.TitleStyle & 1) != 0 ? 3 : 2) : ((design.TitleStyle & 1) != 0 ? 1 : 0),
             v => design.TitleStyle = v switch { 1 => 1, 2 => 8, 3 => 9, _ => 0 });
         for (int i = buttonsFrom; i < widgets.Count; i++) { var w = widgets[i]; w.Shown = () => designerTab == 1; }
+
+        BuildLayoutTab(lx, mx, colW, rowH, gap, tabsH, p);
 
         // ---- file row
         float y = ContentY + tabsH + 12 * (rowH + gap) + 6;
