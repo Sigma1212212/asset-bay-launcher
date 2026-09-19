@@ -1,0 +1,13 @@
+{
+  "repository": "Sigma1212212/asset-bay",
+  "assetName": "BundleMenu.dll",
+  "processName": "Gorilla Tag",
+  "entryNamespace": "BundleMenu",
+  "entryClass": "Loader",
+  "entryMethod": "Inject",
+  "ejectMethod": "Eject",
+  "localDllPath": "..\\..\\..\\..\\Injectable\\bin\\Release\\BundleMenu.dll",
+  "theme": "Halo",
+  "followGameTheme": true,
+  "includePrereleases": false
+}

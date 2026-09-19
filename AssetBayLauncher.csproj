@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Asset Bay Launcher (MIT). See LICENSE and THIRD-PARTY-NOTICES.txt. -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Gorilla Tag is 64-bit; SharpMonoInjector needs a launcher of the same bitness. -->
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>AssetBayLauncher</AssemblyName>
+    <RootNamespace>AssetBayLauncher</RootNamespace>
+    <Version>1.0.0</Version>
+    <Product>Asset Bay Launcher</Product>
+    <Copyright>Copyright (c) 2026 Sigma1212212 - MIT</Copyright>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <!-- build-release.ps1 drops the current menu DLL here so it ships inside the exe. -->
+    <BundledMenuDir>$(MSBuildThisFileDirectory)Bundled</BundledMenuDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="SharpMonoInjector">
+      <HintPath>Resources\SharpMonoInjector.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Built-in copy of the menu: used when GitHub can't be reached, or when it's already the latest. -->
+  <ItemGroup Condition="Exists('$(BundledMenuDir)\BundleMenu.dll')">
+    <EmbeddedResource Include="$(BundledMenuDir)\BundleMenu.dll" LogicalName="BundledMenu.dll" />
+    <EmbeddedResource Include="$(BundledMenuDir)\version.txt" LogicalName="BundledMenu.version"
+                      Condition="Exists('$(BundledMenuDir)\version.txt')" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Licence files ship next to the exe, as the MIT licences require. -->
+    <None Include="LICENSE;THIRD-PARTY-NOTICES.txt;launcher.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
