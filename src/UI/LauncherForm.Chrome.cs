@@ -19,37 +19,47 @@ public sealed partial class LauncherForm
 
     private void EnsureChromeFonts()
     {
+        string family = fontFamily ?? "Segoe UI";
         consoleFont ??= new Font("Consolas", 9f);
-        cardValueFont ??= new Font("Segoe UI Semibold", 15f);
-        subtitleFont ??= new Font("Segoe UI", 9.5f);
+        cardValueFont ??= new Font(family, 15f, family == "Segoe UI" ? FontStyle.Regular : FontStyle.Bold);
+        subtitleFont ??= new Font(family, 9.5f);
     }
 
     private void PaintChrome(Graphics g)
     {
         EnsureChromeFonts();
 
-        // Whole window: flat panel colour; the sidebar a shade darker, split by a hairline.
-        using (var bg = new SolidBrush(P(t => t.PanelTop))) g.FillRectangle(bg, ClientRectangle);
+        // Whole window background: flat, a top-to-bottom gradient, or a faint grid.
+        if (config.Background == "gradient")
+            using (var bg = new LinearGradientBrush(ClientRectangle, P(t => t.PanelTop), P(t => t.PanelBottom), 90f)) g.FillRectangle(bg, ClientRectangle);
+        else
+            using (var bg = new SolidBrush(P(t => t.PanelTop))) g.FillRectangle(bg, ClientRectangle);
+        if (config.Background == "grid")
+            using (var gp = new Pen(Fade(P(t => t.ButtonHover), 0.35f)))
+            {
+                for (int gx = SideW + 24; gx < W; gx += 24) g.DrawLine(gp, gx, 0, gx, H);
+                for (int gy = 0; gy < H; gy += 24) g.DrawLine(gp, SideW, gy, W, gy);
+            }
         using (var side = new SolidBrush(Lerp(P(t => t.PanelBottom), Color.Black, 0.15f))) g.FillRectangle(side, 0, 0, SideW, H);
         using (var hair = new Pen(Fade(P(t => t.ButtonHover), 0.9f))) g.DrawLine(hair, SideW, 0, SideW, H);
         using (var rim = new Pen(Fade(P(t => t.EdgeTop), 0.55f), 1f)) g.DrawRectangle(rim, 0, 0, W - 1, H - 1);
 
         // Sidebar: logo + name, then (widgets draw the nav), then game status at the bottom.
         DrawLogo(g, new RectangleF(22, 30, 32, 32), 1f);
-        TextRenderer.DrawText(g, "Asset Bay", titleFont, new Point(62, 22), P(t => t.Text));
-        TextRenderer.DrawText(g, "launcher", valueFont, new Point(66, 58), P(t => t.SubText));
+        Ink.DrawText(g, "Asset Bay", titleFont, new Point(62, 22), P(t => t.Text));
+        Ink.DrawText(g, "launcher", valueFont, new Point(66, 58), P(t => t.SubText));
 
         var dot = gameRunning ? P(t => t.Ok) : P(t => t.Idle);
         using (var b = new SolidBrush(dot)) g.FillEllipse(b, 24, H - 38, 9, 9);
-        TextRenderer.DrawText(g, gameRunning ? (injector.IsInjected ? "Menu loaded" : "Game running") : "Game not running",
+        Ink.DrawText(g, gameRunning ? (injector.IsInjected ? "Menu loaded" : "Game running") : "Game not running",
             valueFont, new Point(40, H - 43), P(t => t.SubText));
-        TextRenderer.DrawText(g, "v" + (Application.ProductVersion.Split('+')[0]), valueFont, new Point(24, H - 68), Fade(P(t => t.SubText), 0.7f));
+        Ink.DrawText(g, "v" + (Application.ProductVersion.Split('+')[0]), valueFont, new Point(24, H - 68), Fade(P(t => t.SubText), 0.7f));
 
         // Header: page title and a one-line description.
         DrawCrossfade(g, pageTitle, titleFont!, new Rectangle(ContentX, 18, 400, 36), P(t => t.Text), TextFormatFlags.Left, 8f);
-        TextRenderer.DrawText(g, PageSubtitles[(int)page], subtitleFont, new Point(ContentX + 2, 54), P(t => t.SubText));
+        Ink.DrawText(g, PageSubtitles[(int)page], subtitleFont, new Point(ContentX + 2, 54), P(t => t.SubText));
 
-        DrawConsole(g);
+        if (config.ShowConsole || page == Page.Logs) DrawConsole(g);
     }
 
     private void DrawConsole(Graphics g)
@@ -65,7 +75,7 @@ public sealed partial class LauncherForm
         }
 
         // Tab strip: "console" + the live status line; the progress bar runs along its bottom edge.
-        TextRenderer.DrawText(g, "console", smallFont, new Point((int)r.X + 12, (int)r.Y + 8), P(t => t.Accent));
+        Ink.DrawText(g, "console", smallFont, new Point((int)r.X + 12, (int)r.Y + 8), P(t => t.Accent));
         DrawCrossfade(g, status, valueFont!, new Rectangle((int)r.X + 90, (int)r.Y + 8, (int)r.Width - 190, 20), statusColor,
             TextFormatFlags.Left | TextFormatFlags.EndEllipsis, 6f, statusColorOld);
         using (var line = new Pen(Fade(P(t => t.ButtonHover), 0.8f))) g.DrawLine(line, r.X, r.Y + 32, r.Right, r.Y + 32);
@@ -79,13 +89,13 @@ public sealed partial class LauncherForm
         {
             var (at, text, kind) = log[i];
             int y = top + (i - start) * lineH;
-            TextRenderer.DrawText(g, $"[{at:HH:mm:ss}]", consoleFont, new Point((int)r.X + 12, y), Fade(P(t => t.SubText), 0.7f));
+            Ink.DrawText(g, $"[{at:HH:mm:ss}]", consoleFont, new Point((int)r.X + 12, y), Fade(P(t => t.SubText), 0.7f));
             var c = kind == StatusKind.Error ? P(t => t.Error) : kind == StatusKind.Ok ? P(t => t.Ok) : kind == StatusKind.Busy ? P(t => t.Busy) : P(t => t.Text);
-            TextRenderer.DrawText(g, text, consoleFont, new Rectangle((int)r.X + 92, y, (int)r.Width - 104, lineH), c,
+            Ink.DrawText(g, text, consoleFont, new Rectangle((int)r.X + 92, y, (int)r.Width - 104, lineH), c,
                 TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
         }
         if (log.Count == 0)
-            TextRenderer.DrawText(g, "nothing yet", consoleFont, new Point((int)r.X + 12, top), Fade(P(t => t.SubText), 0.6f));
+            Ink.DrawText(g, "nothing yet", consoleFont, new Point((int)r.X + 12, top), Fade(P(t => t.SubText), 0.6f));
     }
 
     private void DrawProgressAt(Graphics g, RectangleF track)
@@ -113,7 +123,7 @@ public sealed partial class LauncherForm
 
         var ink = on ? P(t => t.Text) : Lerp(P(t => t.SubText), P(t => t.Text), w.Hover);
         DrawGlyph(g, w.Label, new RectangleF(r.X + 10, r.Y + r.Height / 2 - 9, 18, 18), on ? P(t => t.Accent) : ink);
-        TextRenderer.DrawText(g, Cased(w.Label), labelFont, new Point((int)r.X + 40, (int)(r.Y + r.Height / 2 - 11)), ink);
+        Ink.DrawText(g, Cased(w.Label), labelFont, new Point((int)r.X + 40, (int)(r.Y + r.Height / 2 - 11)), ink);
     }
 
     private void DrawCard(Graphics g, Widget w, RectangleF r, float a)
@@ -121,6 +131,7 @@ public sealed partial class LauncherForm
         using var path = Rounded(r, Radius(t => t.ButtonRadius));
         var fillColor = Lerp(P(t => t.Button), P(t => t.ButtonHover), w.Click != null ? w.Hover : 0f);
         using (var fill = new SolidBrush(Fade(fillColor, a))) g.FillPath(fill, path);
+        DrawKeyFace(g, w, r, path, a, Radius(t => t.ButtonRadius));
         using (var edge = new Pen(Fade(Lerp(P(t => t.ButtonHover), P(t => t.Accent), w.Click != null ? w.Hover * 0.8f : 0f), a))) g.DrawPath(edge, path);
         DrawRipples(g, w, path, Color.White, 0.12f * a);
 
@@ -131,7 +142,7 @@ public sealed partial class LauncherForm
             using var lb = new SolidBrush(Fade(w.LightNow, a * pulse));
             g.FillEllipse(lb, r.Right - 24, r.Y + 16, 9, 9);
         }
-        TextRenderer.DrawText(g, Cased(w.Label), valueFont, new Point((int)x, (int)r.Y + 12), Fade(P(t => t.SubText), a));
+        Ink.DrawText(g, Cased(w.Label), valueFont, new Point((int)x, (int)r.Y + 12), Fade(P(t => t.SubText), a));
         if (w.Value != null && w.ValueText.Current.Length > 0)
             DrawCrossfade(g, w.ValueText, cardValueFont!, Rectangle.Round(new RectangleF(x, r.Y + 30, r.Width - 32, 30)), P(t => t.Text),
                 TextFormatFlags.Left | TextFormatFlags.EndEllipsis, 6f, alpha: a);
@@ -139,7 +150,7 @@ public sealed partial class LauncherForm
         string sub = w.Sub?.Invoke() ?? "";
         float subY = w.ValueText.Current.Length > 0 ? r.Y + 60 : r.Y + 34;
         if (sub.Length > 0)
-            TextRenderer.DrawText(g, sub, valueFont, Rectangle.Round(new RectangleF(x, subY, r.Width - 32, w.Meter != null ? 18 : r.Bottom - subY - 6)),
+            Ink.DrawText(g, sub, valueFont, Rectangle.Round(new RectangleF(x, subY, r.Width - 32, w.Meter != null ? 18 : r.Bottom - subY - 6)),
                 Fade(P(t => t.SubText), a), TextFormatFlags.Left | TextFormatFlags.EndEllipsis |
                 (w.Meter != null ? TextFormatFlags.SingleLine : TextFormatFlags.WordBreak));
         if (w.Meter != null)
@@ -147,9 +158,12 @@ public sealed partial class LauncherForm
             // Usage bar along the bottom edge: green, amber past 60%, red past 90%.
             float m = Math.Clamp(w.Meter(), 0f, 1f);
             var track = new RectangleF(r.X + 1, r.Bottom - 5, r.Width - 2, 4);
+            var clipBefore = g.Clip;
+            g.SetClip(path, System.Drawing.Drawing2D.CombineMode.Intersect); // follow the card's corners
             using (var tb = new SolidBrush(Fade(P(t => t.PanelBottom), a))) g.FillRectangle(tb, track);
             var col = m > 0.9f ? P(t => t.Error) : m > 0.6f ? P(t => t.Busy) : P(t => t.Ok);
             using (var fb = new SolidBrush(Fade(col, a))) g.FillRectangle(fb, track with { Width = Math.Max(3, track.Width * m) });
+            g.Clip = clipBefore;
         }
     }
 
@@ -157,10 +171,8 @@ public sealed partial class LauncherForm
     {
         using var path = Rounded(r, Radius(t => t.ButtonRadius));
         using (var fill = new SolidBrush(Fade(Lerp(P(t => t.Button), P(t => t.ButtonHover), w.Hover), a))) g.FillPath(fill, path);
-        TextRenderer.DrawText(g, Cased(w.Label), labelFont, new Point((int)r.X + 16, (int)(r.Y + r.Height / 2 - 11)), Fade(P(t => t.Text), a));
+        Ink.DrawText(g, Cased(w.Label), labelFont, new Point((int)r.X + 16, (int)(r.Y + r.Height / 2 - 11)), Fade(P(t => t.Text), a));
 
-        bool on = w.Selected?.Invoke() == true;
-        w.Knob = Motion.Approach(w.Knob, on ? 1f : 0f, 1f / 60f, 14f);
         var pill = new RectangleF(r.Right - 60, r.Y + r.Height / 2 - 11, 44, 22);
         using (var pp = Rounded(pill, 11))
         using (var pb = new SolidBrush(Fade(Lerp(P(t => t.PanelBottom), P(t => t.Accent), w.Knob), a))) g.FillPath(pb, pp);

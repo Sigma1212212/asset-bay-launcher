@@ -44,7 +44,7 @@ public sealed partial class LauncherForm
 
     private static StatusKind? Lit(bool? running) => running == null ? StatusKind.Idle : running.Value ? StatusKind.Ok : StatusKind.Error;
 
-    private bool OnPage(Widget w) => w.Page < 0 || w.Page == (int)page;
+    private bool OnPage(Widget w) => (w.Page < 0 || w.Page == (int)page) && (w.Shown?.Invoke() ?? true);
 
     // ================================================================== widgets
 
@@ -88,7 +88,9 @@ public sealed partial class LauncherForm
 
         // ---- console
         widgets.Add(new Widget { Rect = new RectangleF(W - 24 - 70, ConsoleTop + 5, 64, 22), Label = "clear", Small = true, Order = -1,
-                                 Click = () => { log.Clear(); Invalidate(); } });
+                                 Shown = () => config.ShowConsole && page != Page.Logs, Click = () => { log.Clear(); Invalidate(); } });
+        widgets.Add(new Widget { Rect = new RectangleF(W - 24 - 70, ContentY + 5, 64, 22), Label = "clear", Small = true, Order = -1,
+                                 Shown = () => page == Page.Logs, Click = () => { log.Clear(); Invalidate(); } });
 
         foreach (var wd in widgets) wd.ValueText.Current = wd.Value?.Invoke() ?? "";
     }
@@ -172,43 +174,6 @@ public sealed partial class LauncherForm
             click: () => backend.RefreshAsync(force: true));
         Card(p, Cell(1, 1, 2), 4, "How it resets", () => "Daily at 00:00 UTC", () => "monthly limits reset on the 1st · click a card to refresh",
             click: () => backend.RefreshAsync(force: true));
-    }
-
-    private void BuildSettingsPage()
-    {
-        var p = Page.Settings;
-        float y = ContentY, h = 46, gap = 8;
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(ContentX, y, ContentW, h), Page = (int)p, Order = 0, Toggle = true,
-            Label = "Match the in-game menu's theme", Selected = () => config.FollowGameTheme,
-            Click = () => { config.FollowGameTheme = !config.FollowGameTheme; config.Save(); },
-        });
-        y += h + gap;
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(ContentX, y, ContentW, h), Page = (int)p, Order = 1, Toggle = true,
-            Label = "Offer pre-release versions", Selected = () => config.IncludePrereleases,
-            Click = () => { config.IncludePrereleases = !config.IncludePrereleases; config.Save(); nextReleaseCheck = DateTime.MinValue; },
-        });
-        y += h + gap;
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(ContentX, y, ContentW, h), Page = (int)p, Order = 2, Label = "Theme",
-            Value = () => theme.Name + "  (click to change)", Click = CycleTheme,
-        });
-        y += h + gap;
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(ContentX, y, ContentW, h), Page = (int)p, Order = 3, Label = "Menu comes from",
-            Value = () => $"github.com/{config.Repository}", Click = OpenReleases,
-        });
-        y += h + gap;
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(ContentX, y, ContentW, h), Page = (int)p, Order = 4, Label = "Licences",
-            Value = () => "MIT · third-party notices", Click = OpenNotices,
-        });
     }
 
     // ================================================================== extra actions

@@ -22,6 +22,22 @@ public sealed class LauncherConfig
     /// <summary>Match whatever theme the in-game menu last used.</summary>
     [JsonPropertyName("followGameTheme")] public bool FollowGameTheme { get; set; } = true;
     [JsonPropertyName("includePrereleases")] public bool IncludePrereleases { get; set; }
+    // ---- look (all editable on the Settings page)
+    /// <summary>"square", "soft" or "round".</summary>
+    [JsonPropertyName("corners")] public string Corners { get; set; } = "square";
+    /// <summary>"" = the theme's own accent, otherwise "#RRGGBB".</summary>
+    [JsonPropertyName("accent")] public string Accent { get; set; } = "";
+    /// <summary>"theme" or a font family name.</summary>
+    [JsonPropertyName("font")] public string Font { get; set; } = "theme";
+    /// <summary>"theme", "upper" or "normal".</summary>
+    [JsonPropertyName("textCase")] public string TextCase { get; set; } = "theme";
+    /// <summary>"flat", "gradient" or "grid".</summary>
+    [JsonPropertyName("background")] public string Background { get; set; } = "flat";
+    [JsonPropertyName("depth")] public bool Depth { get; set; } = true;
+    [JsonPropertyName("animations")] public bool Animations { get; set; } = true;
+    [JsonPropertyName("showConsole")] public bool ShowConsole { get; set; } = true;
+    [JsonPropertyName("alwaysOnTop")] public bool AlwaysOnTop { get; set; }
+
     /// <summary>The Asset Bay server (Cloudflare Worker) - shown on the Online page.</summary>
     [JsonPropertyName("backendUrl")] public string BackendUrl { get; set; } = "https://assetbay.randomthingsthatarecool.dev/asset-bay/";
 

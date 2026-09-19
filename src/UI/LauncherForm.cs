@@ -77,6 +77,7 @@ public sealed partial class LauncherForm : Form
         public Func<string>? Sub;          // card: small line under the value
         public Func<float>? Meter;         // card: 0..1 usage bar
         public Func<bool>? Selected;       // nav: current page; toggle: on
+        public Func<bool>? Shown;          // extra visibility rule (null = always)
         public float Knob;                 // toggle knob position
 
         public float Hover, Press, EnabledT = 1f;
@@ -113,7 +114,8 @@ public sealed partial class LauncherForm : Form
         updater = new ReleaseUpdater(config);
         injector = new GameInjector(config);
         backend = new BackendMonitor(config.BackendUrl);
-        theme = (config.FollowGameTheme ? LauncherTheme.FromGame() : null) ?? LauncherTheme.ByName(config.Theme);
+        theme = Tint((config.FollowGameTheme ? LauncherTheme.FromGame() : null) ?? LauncherTheme.ByName(config.Theme));
+        TopMost = config.AlwaysOnTop;
         paletteFrom = theme;
         statusColor = statusColorOld = theme.SubText;
 
@@ -197,7 +199,7 @@ public sealed partial class LauncherForm : Form
         if (config.FollowGameTheme && ++themePollTick % 2 == 0)
         {
             var gameTheme = LauncherTheme.FromGame();
-            if (gameTheme != null && gameTheme != theme) SetTheme(gameTheme, fromGame: true);
+            if (gameTheme != null && gameTheme.Name != theme.Name) SetTheme(gameTheme, fromGame: true);
         }
     }
 
@@ -373,13 +375,14 @@ public sealed partial class LauncherForm : Form
 
     private void CycleTheme()
     {
-        int i = Array.IndexOf(LauncherTheme.All, theme);
+        int i = Array.FindIndex(LauncherTheme.All, t => t.Name == theme.Name);
         config.FollowGameTheme = false; // picking by hand overrides following the game
         SetTheme(LauncherTheme.All[(i + 1) % LauncherTheme.All.Length], fromGame: false);
     }
 
     private void SetTheme(LauncherTheme next, bool fromGame)
     {
+        next = Tint(next);
         if (next == theme) return;
         paletteFrom = themeT >= 1f ? theme : Snapshot(); // re-targeting mid-fade starts from what's on screen
         theme = next;
@@ -480,6 +483,7 @@ public sealed partial class LauncherForm : Form
         double now = Now;
         float dt = (float)Math.Clamp(now - lastFrame, 0, 0.05); // never jump after a hitch
         lastFrame = now;
+        if (!config.Animations) dt = 1f; // every ease below reaches its target this frame
 
         StepWindow(dt);
         if (IsDisposed) return;
@@ -509,6 +513,7 @@ public sealed partial class LauncherForm : Form
             w.Press = Motion.Approach(w.Press, w == pressed ? 1f : 0f, dt, 28f);
             w.EnabledT = Motion.Approach(w.EnabledT, enabled || w.Info ? 1f : 0f, dt, 9f);
 
+            if (w.Toggle) w.Knob = Motion.Approach(w.Knob, w.Selected?.Invoke() == true ? 1f : 0f, dt, 14f);
             w.ValueText.Set(w.Value?.Invoke() ?? "");
             w.ValueText.T = Math.Min(1f, w.ValueText.T + dt / 0.28f);
 
@@ -592,7 +597,7 @@ public sealed partial class LauncherForm : Form
     /// <summary>Same "Staggered" entrance as the menu: each row slides and fades in slightly after the last.</summary>
     private (float offset, float alpha) Entrance(int order)
     {
-        if (order < 0) return (0f, 1f);
+        if (order < 0 || !config.Animations) return (0f, 1f);
         float t = (float)Math.Clamp((Now - entranceStart - 0.08 - order * 0.055) / 0.42, 0, 1);
         return ((1f - Motion.OutCubic(t)) * 46f, Math.Clamp(t * 1.6f, 0f, 1f));
     }
@@ -614,7 +619,10 @@ public sealed partial class LauncherForm : Form
     };
 
     private LauncherTheme Shape => themeT < 0.5f ? paletteFrom : theme; // fonts / casing swap at the midpoint
-    private float Radius(Func<LauncherTheme, int> pick) => pick(paletteFrom) + (pick(theme) - pick(paletteFrom)) * Motion.InOutCubic(themeT);
+    private float Radius(Func<LauncherTheme, int> pick) =>
+        (pick(paletteFrom) + (pick(theme) - pick(paletteFrom)) * Motion.InOutCubic(themeT)) * CornerScale;
+
+    private float CornerScale => config.Corners switch { "square" => 0f, "round" => 1.4f, _ => 0.6f };
 
     private Color StatusColorFor(StatusKind k) => k switch
     {
@@ -639,9 +647,10 @@ public sealed partial class LauncherForm : Form
 
     private void EnsureFonts()
     {
-        string family = Shape.UpperCase ? "Consolas" : "Segoe UI";
+        string family = config.Font != "theme" ? config.Font : Shape.UpperCase ? "Consolas" : "Segoe UI";
         if (family == fontFamily) return;
-        foreach (var f in new[] { brandFont, titleFont, labelFont, valueFont, smallFont, primaryFont }) f?.Dispose();
+        foreach (var f in new[] { brandFont, titleFont, labelFont, valueFont, smallFont, primaryFont, consoleFont, cardValueFont, subtitleFont }) f?.Dispose();
+        consoleFont = cardValueFont = subtitleFont = null; // rebuilt in the new family by EnsureChromeFonts
         fontFamily = family;
         brandFont = new Font("Segoe UI", 8.5f, FontStyle.Bold);
         titleFont = new Font(family, 20f, FontStyle.Bold);
@@ -651,7 +660,12 @@ public sealed partial class LauncherForm : Form
         primaryFont = new Font(family, 14f, FontStyle.Bold);
     }
 
-    private string Cased(string s) => Shape.Cased(s);
+    private string Cased(string s) => config.TextCase switch
+    {
+        "upper" => s.ToUpperInvariant(),
+        "normal" => s,
+        _ => Shape.Cased(s),
+    };
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -673,10 +687,10 @@ public sealed partial class LauncherForm : Form
         if (e < 1f && text.Old.Length > 0)
         {
             var r = rect; r.Offset(0, (int)Math.Round(-travel * e));
-            TextRenderer.DrawText(g, text.Old, font, r, Fade(oldColor ?? color, (1f - e) * alpha), flags);
+            Ink.DrawText(g, text.Old, font, r, Fade(oldColor ?? color, (1f - e) * alpha), flags);
         }
         var n = rect; n.Offset(0, (int)Math.Round(travel * (1f - e)));
-        TextRenderer.DrawText(g, text.Current, font, n, Fade(color, e * alpha), flags);
+        Ink.DrawText(g, text.Current, font, n, Fade(color, e * alpha), flags);
     }
 
     private void DrawProgress(Graphics g)
@@ -716,7 +730,9 @@ public sealed partial class LauncherForm : Form
         if (alpha <= 0f) return;
         if (w.Nav) { DrawNav(g, w, w.Rect); return; }
 
-        float scale = 1f + w.Hover * (w.Primary ? 0.018f : 0.012f) - w.Press * 0.035f;
+        float keyDepth = KeyDepth(w);
+        // 3D keys travel down onto their base when pressed instead of shrinking.
+        float scale = 1f + w.Hover * (w.Primary ? 0.018f : 0.012f) - (keyDepth > 0f ? 0f : w.Press * 0.035f);
         var r = w.Rect;
         r = new RectangleF(r.X + offset + r.Width * (1 - scale) / 2, r.Y + r.Height * (1 - scale) / 2, r.Width * scale, r.Height * scale);
         bool injectedLook = w.Primary && injector.IsInjected;
@@ -725,10 +741,10 @@ public sealed partial class LauncherForm : Form
         if (w.Order == -2) // footer link: colour warms up and an underline draws in on hover
         {
             var c = Lerp(P(t => t.SubText), P(t => t.Text), w.Hover);
-            TextRenderer.DrawText(g, w.Label, valueFont, Rectangle.Round(r), Fade(c, 0.85f), TextFormatFlags.HorizontalCenter);
+            Ink.DrawText(g, w.Label, valueFont, Rectangle.Round(r), Fade(c, 0.85f), TextFormatFlags.HorizontalCenter);
             if (w.Hover > 0.01f)
             {
-                var size = TextRenderer.MeasureText(w.Label, valueFont);
+                var size = Ink.MeasureText(w.Label, valueFont);
                 float lw = size.Width * Motion.OutCubic(w.Hover);
                 using var pen = new Pen(Fade(P(t => t.Accent), w.Hover), 1f);
                 g.DrawLine(pen, r.X + r.Width / 2 - lw / 2, r.Y + size.Height, r.X + r.Width / 2 + lw / 2, r.Y + size.Height);
@@ -737,6 +753,11 @@ public sealed partial class LauncherForm : Form
         }
 
         float radius = w.Label is "×" or "–" ? Math.Min(Radius(t => t.ButtonRadius), 10) : Radius(t => t.ButtonRadius);
+        if (keyDepth > 0f)
+        {
+            DrawKeyBase(g, w, r, keyDepth, a, radius);
+            r.Y += w.Press * keyDepth * 0.85f;
+        }
         using var path = Rounded(r, radius);
 
         if (w.Primary)
@@ -751,6 +772,7 @@ public sealed partial class LauncherForm : Form
         fillColor = Lerp(fillColor, P(t => t.ButtonPressed), w.Press);
         if (w.Info) fillColor = Fade(P(t => t.Button), 0.55f);
         using (var fill = new SolidBrush(Fade(fillColor, a))) g.FillPath(fill, path);
+        DrawKeyFace(g, w, r, path, a, radius);
         DrawRipples(g, w, path, Color.White, 0.16f * a);
 
         var edge = Lerp(P(t => t.ButtonEdge), P(t => t.Accent), w.Hover);
@@ -760,14 +782,14 @@ public sealed partial class LauncherForm : Form
         if (w.Label == "theme")
         {
             var chip = new Crossfade(theme.Name + (config.FollowGameTheme ? " ·" : "")) { T = 1f };
-            TextRenderer.DrawText(g, chip.Current, smallFont, Rectangle.Round(r), Fade(P(t => t.Text), a),
+            Ink.DrawText(g, chip.Current, smallFont, Rectangle.Round(r), Fade(P(t => t.Text), a),
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             return;
         }
 
         if (w.Small)
         {
-            TextRenderer.DrawText(g, Cased(w.Label), smallFont, Rectangle.Round(r), Fade(P(t => t.Text), a),
+            Ink.DrawText(g, Cased(w.Label), smallFont, Rectangle.Round(r), Fade(P(t => t.Text), a),
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             return;
         }
@@ -796,7 +818,7 @@ public sealed partial class LauncherForm : Form
             g.FillEllipse(lb, centre.X - d / 2, centre.Y - d / 2, d, d);
             textLeft = r.X + 40;
         }
-        TextRenderer.DrawText(g, Cased(w.Label), labelFont, new Point((int)textLeft, (int)(r.Y + r.Height / 2 - 11)), Fade(P(t => t.Text), a));
+        Ink.DrawText(g, Cased(w.Label), labelFont, new Point((int)textLeft, (int)(r.Y + r.Height / 2 - 11)), Fade(P(t => t.Text), a));
         DrawCrossfade(g, w.ValueText, valueFont!, Rectangle.Round(new RectangleF(r.X, r.Y, r.Width - 16, r.Height)), P(t => t.SubText),
             TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis, 7f, alpha: a);
     }
@@ -807,6 +829,7 @@ public sealed partial class LauncherForm : Form
         top = Lerp(top, Color.Black, w.Press * 0.12f);
         using (var fill = new SolidBrush(Fade(top, a)))
             g.FillPath(fill, path);
+        DrawKeyFace(g, w, r, path, a, Radius(t => t.ButtonRadius));
 
         // hover sheen: a diagonal band of light sweeps across, once every 1.6 s while hovered
         if (w.Hover > 0.01f && w.EnabledT > 0.5f)
@@ -843,17 +866,17 @@ public sealed partial class LauncherForm : Form
         {
             // check mark draws itself on, then the label settles beside it
             float ct = successT < 0f ? 1f : Math.Clamp(successT / 0.45f, 0f, 1f);
-            var size = TextRenderer.MeasureText(text, primaryFont);
+            var size = Ink.MeasureText(text, primaryFont);
             float total = size.Width + 30f;
             float left = r.X + r.Width / 2 - total / 2;
             DrawCheck(g, new PointF(left + 10, r.Y + r.Height / 2), Motion.OutCubic(ct), Fade(ink, a));
             textRect = Rectangle.Round(new RectangleF(left + 30, r.Y, size.Width + 4, r.Height));
             float labelT = successT < 0f ? 1f : Math.Clamp((successT - 0.2f) / 0.35f, 0f, 1f);
-            TextRenderer.DrawText(g, text, primaryFont, textRect, Fade(ink, a * labelT), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            Ink.DrawText(g, text, primaryFont, textRect, Fade(ink, a * labelT), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
         }
         else
         {
-            TextRenderer.DrawText(g, text, primaryFont, textRect, Fade(ink, a), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            Ink.DrawText(g, text, primaryFont, textRect, Fade(ink, a), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
         if (w.ValueText.Current.Length > 0 || w.ValueText.T < 1f)
@@ -956,7 +979,7 @@ public sealed partial class LauncherForm : Form
     private void ApplyRoundedCorners()
     {
         // Windows 11 draws smooth rounded corners and a shadow for borderless windows when asked to.
-        int preference = 2; // DWMWCP_ROUND
+        int preference = config.Corners == "square" ? 1 /* DWMWCP_DONOTROUND */ : 2; // DWMWCP_ROUND
         try { DwmSetWindowAttribute(Handle, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, ref preference, sizeof(int)); }
         catch { /* Windows 10: square corners, still works */ }
     }
