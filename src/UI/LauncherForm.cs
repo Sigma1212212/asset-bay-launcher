@@ -8,6 +8,10 @@ namespace AssetBayLauncher.UI;
 /// <summary>
 /// The launcher window. Everything is painted in code (no designer, no image or font files) with the
 /// same palettes, status lights and staggered entrance as the in-game menu.
+///
+/// Motion model: every animated value keeps its own state and eases toward a target using the real frame
+/// delta, so timing is identical at any frame rate. The frame loop runs at ~120 fps while anything moves
+/// and stops repainting entirely when the window is still.
 /// </summary>
 public sealed class LauncherForm : Form
 {
@@ -17,12 +21,15 @@ public sealed class LauncherForm : Form
     private readonly ReleaseUpdater updater;
     private readonly GameInjector injector;
     private readonly List<Widget> widgets = new();
-    private readonly System.Windows.Forms.Timer frame = new() { Interval = 16 };
+    private readonly System.Windows.Forms.Timer frame = new() { Interval = 8 };
     private readonly System.Windows.Forms.Timer poll = new() { Interval = 1000 };
     private readonly Stopwatch clock = Stopwatch.StartNew();
 
-    private LauncherTheme theme;
-    private double entranceStart;
+    // theme: palette cross-fades from `paletteFrom` to `theme`
+    private LauncherTheme theme, paletteFrom;
+    private float themeT = 1f;
+
+    private double entranceStart, lastFrame;
     private Widget? hovered, pressed;
     private bool busy;
 
@@ -32,11 +39,22 @@ public sealed class LauncherForm : Form
     private StatusKind releaseState = StatusKind.Busy;
     private bool gameRunning;
     private string injectedLabel = "";
-    private string statusText = "";
     private StatusKind statusKind = StatusKind.Idle;
     private float progress = -1f;
     private DateTime nextReleaseCheck = DateTime.MinValue;
     private int themePollTick;
+
+    // animated state
+    private float windowT;                 // 0 hidden .. 1 shown
+    private enum WindowMotion { Opening, Open, Closing, Minimizing }
+    private WindowMotion windowMotion = WindowMotion.Opening;
+    private Point restLocation;
+    private readonly Crossfade title = new("Ready");
+    private readonly Crossfade status = new("");
+    private Color statusColor, statusColorOld;
+    private float progressShown, progressAlpha, shimmer;
+    private float successT = -1f;          // check mark draw-on after an injection
+    private float sheen;                   // primary button hover sweep phase
 
     private enum StatusKind { Idle, Busy, Ok, Error }
 
@@ -50,8 +68,33 @@ public sealed class LauncherForm : Form
         public Action? Click;
         public bool Primary, Small, Info;
         public int Order;
-        public float Hover, Press;
+
+        public float Hover, Press, EnabledT = 1f;
+        public readonly Crossfade ValueText = new("");
+        public Color LightNow;
+        public bool LightInit;
+        public StatusKind? LightKind;
+        public float PingT = -1f;
+        public readonly List<(PointF at, float t)> Ripples = new();
+
         public bool IsEnabled => Enabled?.Invoke() ?? true;
+    }
+
+    /// <summary>Old/new text pair; t runs 0..1 as the new one replaces the old.</summary>
+    private sealed class Crossfade
+    {
+        public string Current, Old = "";
+        public float T = 1f;
+        public Crossfade(string initial) => Current = initial;
+
+        public bool Set(string next)
+        {
+            if (next == Current) return false;
+            Old = Current;
+            Current = next;
+            T = 0f;
+            return true;
+        }
     }
 
     public LauncherForm(LauncherConfig config)
@@ -60,6 +103,8 @@ public sealed class LauncherForm : Form
         updater = new ReleaseUpdater(config);
         injector = new GameInjector(config);
         theme = (config.FollowGameTheme ? LauncherTheme.FromGame() : null) ?? LauncherTheme.ByName(config.Theme);
+        paletteFrom = theme;
+        statusColor = statusColorOld = theme.SubText;
 
         Text = "Asset Bay Launcher";
         FormBorderStyle = FormBorderStyle.None;
@@ -68,22 +113,35 @@ public sealed class LauncherForm : Form
         DoubleBuffered = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
         KeyPreview = true;
+        Opacity = 0; // faded in by the frame loop
         Icon = MakeIcon();
 
         BuildWidgets();
 
-        frame.Tick += (_, _) => Animate();
+        frame.Tick += (_, _) => Frame();
         poll.Tick += (_, _) => Poll();
+        Load += (_, _) => restLocation = Location;
         Shown += (_, _) =>
         {
             ApplyRoundedCorners();
-            entranceStart = Now;
+            timeBeginPeriod(1); // 1 ms timer resolution so the 8 ms frame timer is actually 8 ms
+            entranceStart = lastFrame = Now;
             frame.Start();
             poll.Start();
             Poll();
         };
+        Move += (_, _) => { if (windowMotion == WindowMotion.Open && WindowState == FormWindowState.Normal) restLocation = Location; };
+        Resize += (_, _) =>
+        {
+            // Coming back from the taskbar: fade in again.
+            if (WindowState == FormWindowState.Normal && windowMotion == WindowMotion.Minimizing)
+            {
+                windowMotion = WindowMotion.Opening;
+                windowT = 0f;
+            }
+        };
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) Close(); };
-        FormClosed += (_, _) => { injector.Dispose(); frame.Dispose(); poll.Dispose(); };
+        FormClosed += (_, _) => { timeEndPeriod(1); injector.Dispose(); frame.Dispose(); poll.Dispose(); };
     }
 
     private double Now => clock.Elapsed.TotalSeconds;
@@ -130,7 +188,7 @@ public sealed class LauncherForm : Form
         widgets.Add(new Widget
         {
             Rect = new RectangleF(x, y, w, 62), Label = "Inject latest", Primary = true, Order = order++,
-            Value = () => release != null ? release.Tag : "",
+            Value = () => injector.IsInjected ? "" : release != null ? release.Tag : "",
             Enabled = () => !busy && gameRunning && !injector.IsInjected && (config.RepositoryConfigured || BundledMenu.Available),
             Click = () => RunAsync(InjectLatestAsync),
         });
@@ -154,7 +212,7 @@ public sealed class LauncherForm : Form
         // header controls
         widgets.Add(new Widget { Rect = new RectangleF(W - Pad - 34, 24, 34, 34), Label = "×", Small = true, Order = -1, Click = Close });
         widgets.Add(new Widget { Rect = new RectangleF(W - Pad - 34 - 42, 24, 34, 34), Label = "–", Small = true, Order = -1,
-                                 Click = () => WindowState = FormWindowState.Minimized });
+                                 Click = Minimize });
         widgets.Add(new Widget
         {
             Rect = new RectangleF(W - Pad - 34 - 42 - 100, 28, 92, 26), Label = "theme", Small = true, Order = -1,
@@ -164,9 +222,11 @@ public sealed class LauncherForm : Form
         // footer licence link
         widgets.Add(new Widget
         {
-            Rect = new RectangleF(x, H - 34, w, 20), Label = "MIT licence · third-party notices", Info = false,
+            Rect = new RectangleF(x, H - 34, w, 20), Label = "MIT licence · third-party notices",
             Order = -2, Click = OpenNotices,
         });
+
+        foreach (var wd in widgets) wd.ValueText.Current = wd.Value?.Invoke() ?? "";
     }
 
     private string MenuCopyText()
@@ -205,7 +265,6 @@ public sealed class LauncherForm : Form
             var gameTheme = LauncherTheme.FromGame();
             if (gameTheme != null && gameTheme != theme) SetTheme(gameTheme, fromGame: true);
         }
-        Invalidate();
     }
 
     private async void CheckReleaseAsync(bool force)
@@ -234,7 +293,6 @@ public sealed class LauncherForm : Form
             releaseState = StatusKind.Error;
             if (force) SetStatus(e.Message, StatusKind.Error);
         }
-        Invalidate();
     }
 
     private async void RunAsync(Func<Task> action)
@@ -243,7 +301,7 @@ public sealed class LauncherForm : Form
         busy = true;
         try { await action(); }
         catch (Exception e) { SetStatus(e.Message, StatusKind.Error); progress = -1f; }
-        finally { busy = false; Invalidate(); }
+        finally { busy = false; }
     }
 
     /// <summary>
@@ -269,7 +327,7 @@ public sealed class LauncherForm : Form
                 bool cached = updater.IsCached(release);
                 SetStatus(cached ? $"Verifying {release.Tag}..." : $"Downloading {release.Tag} from GitHub...", StatusKind.Busy);
                 progress = 0f;
-                var reporter = new Progress<float>(p => { progress = p; Invalidate(); });
+                var reporter = new Progress<float>(p => progress = p);
                 path = await updater.EnsureDownloadedAsync(release, reporter);
             }
             label = release.Tag;
@@ -285,10 +343,12 @@ public sealed class LauncherForm : Form
             await Task.Delay(900);
         }
 
+        progress = 1f; // let the bar glide to full before it fades out
         SetStatus("Injecting...", StatusKind.Busy);
         await Task.Run(() => injector.Inject(path));
         progress = -1f;
         injectedLabel = label;
+        successT = 0f;
         SetStatus($"Injected {label}. Press Tab in game (Y on the left controller in VR).", StatusKind.Ok);
     }
 
@@ -307,6 +367,7 @@ public sealed class LauncherForm : Form
         SetStatus("Injecting local build...", StatusKind.Busy);
         await Task.Run(() => injector.Inject(path));
         injectedLabel = "local";
+        successT = 0f;
         SetStatus($"Injected local build ({ReleaseUpdater.HashFile(path)[..8]}). Press Tab in game.", StatusKind.Ok);
     }
 
@@ -315,6 +376,7 @@ public sealed class LauncherForm : Form
         SetStatus("Ejecting...", StatusKind.Busy);
         await Task.Run(injector.Eject);
         injectedLabel = "";
+        successT = -1f;
         SetStatus("Ejected. You can inject another build now.", StatusKind.Idle);
     }
 
@@ -327,11 +389,13 @@ public sealed class LauncherForm : Form
 
     private void SetTheme(LauncherTheme next, bool fromGame)
     {
+        if (next == theme) return;
+        paletteFrom = themeT >= 1f ? theme : Snapshot(); // re-targeting mid-fade starts from what's on screen
         theme = next;
+        themeT = 0f;
         config.Theme = next.Name;
         config.Save();
         Icon = MakeIcon();
-        entranceStart = Now; // replay the entrance, same as the in-game menu does on theme change
         if (fromGame) SetStatus($"Matched the in-game theme: {next.Name}", StatusKind.Idle);
     }
 
@@ -343,9 +407,26 @@ public sealed class LauncherForm : Form
 
     private void SetStatus(string text, StatusKind kind)
     {
-        statusText = text;
+        statusColorOld = statusColor;
         statusKind = kind;
-        Invalidate();
+        if (!status.Set(text)) statusColorOld = StatusColorFor(kind); // same text, new colour: just recolour
+    }
+
+    private void Minimize()
+    {
+        windowMotion = WindowMotion.Minimizing;
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        // Play the exit animation first; Frame() calls Close() again once it has finished.
+        if (windowMotion != WindowMotion.Closing && e.CloseReason == CloseReason.UserClosing && Visible && WindowState == FormWindowState.Normal)
+        {
+            e.Cancel = true;
+            windowMotion = WindowMotion.Closing;
+            return;
+        }
+        base.OnFormClosing(e);
     }
 
     private static string Short(string s) => s.Length <= 34 ? s : s[..33] + "…";
@@ -359,6 +440,7 @@ public sealed class LauncherForm : Form
         if (hit != hovered)
         {
             hovered = hit;
+            if (hit?.Primary == true) sheen = 0f;
             Cursor = hit?.Click != null && hit.IsEnabled ? Cursors.Hand : Cursors.Default;
         }
     }
@@ -376,6 +458,7 @@ public sealed class LauncherForm : Form
         if (hit?.Click != null && hit.IsEnabled)
         {
             pressed = hit;
+            hit.Ripples.Add((e.Location, 0f)); // ripple starts exactly where you clicked
         }
         else if (e.Button == MouseButtons.Left && e.Y < 100)
         {
@@ -396,187 +479,448 @@ public sealed class LauncherForm : Form
     private Widget? HitTest(Point p) =>
         widgets.LastOrDefault(w => w.Click != null && w.Rect.Contains(p));
 
-    // ================================================================== animation + painting
+    // ================================================================== frame loop
 
-    private void Animate()
+    private void Frame()
     {
-        float dt = 0.016f;
+        double now = Now;
+        float dt = (float)Math.Clamp(now - lastFrame, 0, 0.05); // never jump after a hitch
+        lastFrame = now;
+
+        StepWindow(dt);
+        if (IsDisposed) return;
+
+        themeT = Math.Min(1f, themeT + dt / 0.4f);
+        title.Set(injectedLabel.Length > 0 ? "Menu loaded" : "Ready");
+        title.T = Math.Min(1f, title.T + dt / 0.3f);
+        status.T = Math.Min(1f, status.T + dt / 0.28f);
+        statusColor = Motion.Approach(statusColor, StatusColorFor(statusKind), dt, 10f);
+
+        // Progress glides toward its real value; shimmer runs while the bar is visible.
+        bool showBar = progress >= 0f || (busy && progressShown > 0f);
+        if (progress >= 0f) progressShown = Motion.Approach(progressShown, progress, dt, 9f);
+        progressAlpha = Motion.Approach(progressAlpha, showBar ? 1f : 0f, dt, 8f);
+        if (progressAlpha < 0.01f && progress < 0f) progressShown = 0f;
+        shimmer += dt;
+
+        if (successT >= 0f && successT < 2f) successT += dt;
+        if (hovered?.Primary == true) sheen += dt;
+
         foreach (var w in widgets)
         {
-            float hoverTarget = w == hovered && w.Click != null && w.IsEnabled ? 1f : 0f;
-            float pressTarget = w == pressed ? 1f : 0f;
-            w.Hover += (hoverTarget - w.Hover) * Math.Min(1f, dt * 16f);
-            w.Press += (pressTarget - w.Press) * Math.Min(1f, dt * 24f);
+            bool enabled = w.IsEnabled;
+            bool hover = w == hovered && w.Click != null && enabled;
+            w.Hover = Motion.Approach(w.Hover, hover ? 1f : 0f, dt, 14f);
+            w.Press = Motion.Approach(w.Press, w == pressed ? 1f : 0f, dt, 28f);
+            w.EnabledT = Motion.Approach(w.EnabledT, enabled || w.Info ? 1f : 0f, dt, 9f);
+
+            w.ValueText.Set(w.Value?.Invoke() ?? "");
+            w.ValueText.T = Math.Min(1f, w.ValueText.T + dt / 0.28f);
+
+            for (int i = w.Ripples.Count - 1; i >= 0; i--)
+            {
+                var r = w.Ripples[i];
+                r.t += dt / 0.55f;
+                if (r.t >= 1f) w.Ripples.RemoveAt(i); else w.Ripples[i] = r;
+            }
+
+            var kind = w.Light?.Invoke();
+            if (kind != null)
+            {
+                var target = LightColor(kind.Value);
+                if (!w.LightInit) { w.LightNow = target; w.LightInit = true; }
+                else w.LightNow = Motion.Approach(w.LightNow, target, dt, 8f);
+                if (kind != w.LightKind)
+                {
+                    if (kind == StatusKind.Ok && w.LightKind != null) w.PingT = 0f; // "it worked" ping
+                    w.LightKind = kind;
+                }
+            }
+            if (w.PingT >= 0f) { w.PingT += dt / 0.7f; if (w.PingT >= 1f) w.PingT = -1f; }
         }
-        Invalidate();
+
+        if (IsAnimating()) Invalidate();
+    }
+
+    private void StepWindow(float dt)
+    {
+        switch (windowMotion)
+        {
+            case WindowMotion.Opening:
+                windowT = Math.Min(1f, windowT + dt / 0.28f);
+                if (windowT >= 1f) windowMotion = WindowMotion.Open;
+                break;
+            case WindowMotion.Closing:
+            case WindowMotion.Minimizing:
+                windowT = Math.Max(0f, windowT - dt / 0.18f);
+                break;
+        }
+
+        float e = windowMotion is WindowMotion.Opening or WindowMotion.Open ? Motion.OutCubic(windowT) : windowT * windowT;
+        Opacity = e;
+        if (WindowState == FormWindowState.Normal && windowMotion != WindowMotion.Open)
+            Location = new Point(restLocation.X, restLocation.Y + (int)Math.Round((1f - e) * 16f));
+
+        if (windowT <= 0f && windowMotion == WindowMotion.Closing)
+        {
+            frame.Stop();
+            Close();
+        }
+        else if (windowT <= 0f && windowMotion == WindowMotion.Minimizing && WindowState != FormWindowState.Minimized)
+        {
+            Location = restLocation;
+            WindowState = FormWindowState.Minimized;
+            Opacity = 1; // the taskbar thumbnail should look normal
+        }
+    }
+
+    private bool IsAnimating()
+    {
+        if (windowMotion != WindowMotion.Open || themeT < 1f || title.T < 1f || status.T < 1f) return true;
+        if (Now - entranceStart < 1.2) return true;
+        if (progressAlpha > 0.001f || successT is >= 0f and < 2f || hovered?.Primary == true) return true;
+        if (Math.Abs(statusColor.ToArgb() - StatusColorFor(statusKind).ToArgb()) > 0 && status.T < 1f) return true;
+        foreach (var w in widgets)
+        {
+            if (w.Ripples.Count > 0 || w.PingT >= 0f || w.ValueText.T < 1f) return true;
+            if (Math.Abs(w.Hover - (w == hovered && w.IsEnabled ? 1f : 0f)) > 0.003f) return true;
+            if (w.Press > 0.003f || Math.Abs(w.EnabledT - (w.IsEnabled || w.Info ? 1f : 0f)) > 0.003f) return true;
+            if (w.LightKind == StatusKind.Busy) return true; // breathing light
+            if (w.LightInit && w.LightKind != null && w.LightNow.ToArgb() != LightColor(w.LightKind.Value).ToArgb()) return true;
+        }
+        return false;
     }
 
     /// <summary>Same "Staggered" entrance as the menu: each row slides and fades in slightly after the last.</summary>
     private (float offset, float alpha) Entrance(int order)
     {
         if (order < 0) return (0f, 1f);
-        float t = (float)Math.Clamp((Now - entranceStart - order * 0.055) / 0.36, 0, 1);
-        float e = 1f - MathF.Pow(1f - t, 3f);
-        return ((1f - e) * 46f, Math.Clamp(t * 1.6f, 0f, 1f));
+        float t = (float)Math.Clamp((Now - entranceStart - 0.08 - order * 0.055) / 0.42, 0, 1);
+        return ((1f - Motion.OutCubic(t)) * 46f, Math.Clamp(t * 1.6f, 0f, 1f));
     }
+
+    // ================================================================== palette
+
+    private Color P(Func<LauncherTheme, Color> pick) =>
+        themeT >= 1f ? pick(theme) : Lerp(pick(paletteFrom), pick(theme), Motion.InOutCubic(themeT));
+
+    /// <summary>Freeze the currently blended palette so a new theme can fade from it.</summary>
+    private LauncherTheme Snapshot() => theme with
+    {
+        PanelTop = P(t => t.PanelTop), PanelBottom = P(t => t.PanelBottom),
+        EdgeTop = P(t => t.EdgeTop), EdgeBottom = P(t => t.EdgeBottom),
+        Accent = P(t => t.Accent), Accent2 = P(t => t.Accent2),
+        Button = P(t => t.Button), ButtonHover = P(t => t.ButtonHover), ButtonPressed = P(t => t.ButtonPressed),
+        ButtonEdge = P(t => t.ButtonEdge), Text = P(t => t.Text), SubText = P(t => t.SubText),
+        Idle = P(t => t.Idle), Busy = P(t => t.Busy), Ok = P(t => t.Ok), Error = P(t => t.Error),
+    };
+
+    private LauncherTheme Shape => themeT < 0.5f ? paletteFrom : theme; // fonts / casing swap at the midpoint
+    private float Radius(Func<LauncherTheme, int> pick) => pick(paletteFrom) + (pick(theme) - pick(paletteFrom)) * Motion.InOutCubic(themeT);
+
+    private Color StatusColorFor(StatusKind k) => k switch
+    {
+        StatusKind.Ok => P(t => t.Ok),
+        StatusKind.Error => P(t => t.Error),
+        StatusKind.Busy => P(t => t.Busy),
+        _ => P(t => t.SubText),
+    };
+
+    private Color LightColor(StatusKind k) => k switch
+    {
+        StatusKind.Ok => P(t => t.Ok),
+        StatusKind.Busy => P(t => t.Busy),
+        StatusKind.Error => P(t => t.Error),
+        _ => P(t => t.Idle),
+    };
+
+    // ================================================================== painting
+
+    private string? fontFamily;
+    private Font? brandFont, titleFont, labelFont, valueFont, smallFont, primaryFont;
+
+    private void EnsureFonts()
+    {
+        string family = Shape.UpperCase ? "Consolas" : "Segoe UI";
+        if (family == fontFamily) return;
+        foreach (var f in new[] { brandFont, titleFont, labelFont, valueFont, smallFont, primaryFont }) f?.Dispose();
+        fontFamily = family;
+        brandFont = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+        titleFont = new Font(family, 20f, FontStyle.Bold);
+        labelFont = new Font(family, 11.5f);
+        valueFont = new Font("Segoe UI", 9.5f);
+        smallFont = new Font(family, 10.5f, FontStyle.Bold);
+        primaryFont = new Font(family, 14f, FontStyle.Bold);
+    }
+
+    private string Cased(string s) => Shape.Cased(s);
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        EnsureFonts();
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
         // background + gradient rim
-        using (var bg = new LinearGradientBrush(ClientRectangle, theme.PanelTop, theme.PanelBottom, 90f))
+        using (var bg = new LinearGradientBrush(ClientRectangle, P(t => t.PanelTop), P(t => t.PanelBottom), 90f))
             g.FillRectangle(bg, ClientRectangle);
         using (var rimPath = Rounded(new RectangleF(1, 1, W - 2, H - 2), 8))
-        using (var rimBrush = new LinearGradientBrush(ClientRectangle, theme.EdgeTop, theme.EdgeBottom, 90f))
+        using (var rimBrush = new LinearGradientBrush(ClientRectangle, P(t => t.EdgeTop), P(t => t.EdgeBottom), 90f))
         using (var rim = new Pen(rimBrush, 2f))
             g.DrawPath(rim, rimPath);
 
         // header
-        string fontName = theme.UpperCase ? "Consolas" : "Segoe UI";
-        using var brandFont = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-        using var titleFont = new Font(fontName, 20f, FontStyle.Bold);
-        using var labelFont = new Font(fontName, 11.5f, theme.UpperCase ? FontStyle.Regular : FontStyle.Regular);
-        using var valueFont = new Font("Segoe UI", 9.5f);
-        using var smallFont = new Font(fontName, 10.5f, FontStyle.Bold);
-        using var primaryFont = new Font(fontName, 14f, FontStyle.Bold);
+        DrawLogo(g, new RectangleF(Pad, 28, 30, 30), 1f);
+        TextRenderer.DrawText(g, "ASSET BAY  ·  LAUNCHER", brandFont, new Point(Pad + 40, 28), P(t => t.SubText));
+        DrawCrossfade(g, title, titleFont!, new Rectangle(Pad + 36, 42, 260, 40), P(t => t.Text), TextFormatFlags.Left, 10f);
 
-        DrawLogo(g, new RectangleF(Pad, 28, 30, 30));
-        TextRenderer.DrawText(g, "ASSET BAY  ·  LAUNCHER", brandFont, new Point(Pad + 40, 28), theme.SubText);
-        TextRenderer.DrawText(g, theme.Cased(injectedLabel.Length > 0 ? "Menu loaded" : "Ready"), titleFont,
-            new Point(Pad + 36, 42), theme.Text);
+        // accent line grows out from the centre with the entrance
+        float lineT = (float)Math.Clamp((Now - entranceStart) / 0.5, 0, 1);
+        float lineW = (W - Pad * 2) * Motion.OutCubic(lineT);
+        if (lineW > 1f)
+            using (var accent = new LinearGradientBrush(new RectangleF(Pad, 96, W - Pad * 2, 3), P(t => t.Accent), P(t => t.Accent2), 0f))
+                g.FillRectangle(accent, W / 2f - lineW / 2f, 96, lineW, 3);
 
-        // accent line (grows in with the entrance)
-        float lineT = (float)Math.Clamp((Now - entranceStart) / 0.4, 0, 1);
-        float lineW = (W - Pad * 2) * (1f - MathF.Pow(1f - lineT, 3f));
-        using (var accent = new LinearGradientBrush(new RectangleF(Pad, 96, W - Pad * 2, 3), theme.Accent, theme.Accent2, 0f))
-            g.FillRectangle(accent, W / 2f - lineW / 2f, 96, lineW, 3);
+        foreach (var w in widgets) DrawWidget(g, w);
 
-        foreach (var w in widgets) DrawWidget(g, w, labelFont, valueFont, smallFont, primaryFont);
-
-        // progress + status
-        float statusY = H - 74;
-        if (progress >= 0f)
-        {
-            var track = new RectangleF(Pad, statusY - 12, W - Pad * 2, 6);
-            using (var trackBrush = new SolidBrush(Fade(theme.Button, 1f)))
-            using (var trackPath = Rounded(track, 3)) g.FillPath(trackBrush, trackPath);
-            var fill = track with { Width = Math.Max(6, track.Width * progress) };
-            using var fillBrush = new LinearGradientBrush(track, theme.Accent, theme.Accent2, 0f);
-            using var fillPath = Rounded(fill, 3);
-            g.FillPath(fillBrush, fillPath);
-        }
-        var statusColor = statusKind switch
-        {
-            StatusKind.Ok => theme.Ok,
-            StatusKind.Error => theme.Error,
-            StatusKind.Busy => theme.Busy,
-            _ => theme.SubText,
-        };
-        TextRenderer.DrawText(g, statusText, valueFont, new Rectangle(Pad, (int)statusY, W - Pad * 2, 36), statusColor,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
+        DrawProgress(g);
+        DrawCrossfade(g, status, valueFont!, new Rectangle(Pad, H - 74, W - Pad * 2, 36), statusColor,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis, 8f, statusColorOld);
     }
 
-    private void DrawWidget(Graphics g, Widget w, Font label, Font value, Font small, Font primary)
+    /// <summary>Old text slides up and fades out while the new one rises in from below.</summary>
+    private static void DrawCrossfade(Graphics g, Crossfade text, Font font, Rectangle rect, Color color,
+        TextFormatFlags flags, float travel, Color? oldColor = null, float alpha = 1f)
+    {
+        float e = Motion.OutCubic(text.T);
+        if (e < 1f && text.Old.Length > 0)
+        {
+            var r = rect; r.Offset(0, (int)Math.Round(-travel * e));
+            TextRenderer.DrawText(g, text.Old, font, r, Fade(oldColor ?? color, (1f - e) * alpha), flags);
+        }
+        var n = rect; n.Offset(0, (int)Math.Round(travel * (1f - e)));
+        TextRenderer.DrawText(g, text.Current, font, n, Fade(color, e * alpha), flags);
+    }
+
+    private void DrawProgress(Graphics g)
+    {
+        if (progressAlpha <= 0.01f) return;
+        var track = new RectangleF(Pad, H - 86, W - Pad * 2, 6);
+        using (var trackBrush = new SolidBrush(Fade(P(t => t.Button), progressAlpha)))
+        using (var trackPath = Rounded(track, 3)) g.FillPath(trackBrush, trackPath);
+
+        var fill = track with { Width = Math.Max(6, track.Width * Math.Clamp(progressShown, 0f, 1f)) };
+        using var fillPath = Rounded(fill, 3);
+        using (var fillBrush = new LinearGradientBrush(track, Fade(P(t => t.Accent), progressAlpha), Fade(P(t => t.Accent2), progressAlpha), 0f))
+            g.FillPath(fillBrush, fillPath);
+
+        // a soft highlight sweeping along the filled part
+        float sweepW = 70f;
+        float x = fill.X - sweepW + (shimmer * 260f % (fill.Width + sweepW * 2));
+        var band = new RectangleF(x, fill.Y, sweepW, fill.Height);
+        var clip = g.Clip;
+        g.SetClip(fillPath);
+        using (var shine = new LinearGradientBrush(band, Color.Transparent, Color.Transparent, 0f))
+        {
+            shine.InterpolationColors = new ColorBlend
+            {
+                Colors = new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb((int)(110 * progressAlpha), 255, 255, 255), Color.FromArgb(0, 255, 255, 255) },
+                Positions = new[] { 0f, 0.5f, 1f },
+            };
+            g.FillRectangle(shine, band);
+        }
+        g.Clip = clip;
+    }
+
+    private void DrawWidget(Graphics g, Widget w)
     {
         var (offset, alpha) = Entrance(w.Order);
         if (alpha <= 0f) return;
 
-        bool enabled = w.IsEnabled;
-        float scale = 1f + w.Hover * (w.Primary ? 0.015f : 0.01f) - w.Press * 0.03f;
+        float scale = 1f + w.Hover * (w.Primary ? 0.018f : 0.012f) - w.Press * 0.035f;
         var r = w.Rect;
         r = new RectangleF(r.X + offset + r.Width * (1 - scale) / 2, r.Y + r.Height * (1 - scale) / 2, r.Width * scale, r.Height * scale);
-        float a = alpha * (enabled || w.Info ? 1f : 0.45f);
+        bool injectedLook = w.Primary && injector.IsInjected;
+        float a = alpha * (0.45f + 0.55f * (injectedLook ? Math.Max(w.EnabledT, 0.8f) : w.EnabledT));
 
-        if (w.Order == -2) // footer link
+        if (w.Order == -2) // footer link: colour warms up and an underline draws in on hover
         {
-            var c = Lerp(theme.SubText, theme.Text, w.Hover);
-            TextRenderer.DrawText(g, w.Label, value, Rectangle.Round(r), Fade(c, 0.8f), TextFormatFlags.HorizontalCenter);
+            var c = Lerp(P(t => t.SubText), P(t => t.Text), w.Hover);
+            TextRenderer.DrawText(g, w.Label, valueFont, Rectangle.Round(r), Fade(c, 0.85f), TextFormatFlags.HorizontalCenter);
+            if (w.Hover > 0.01f)
+            {
+                var size = TextRenderer.MeasureText(w.Label, valueFont);
+                float lw = size.Width * Motion.OutCubic(w.Hover);
+                using var pen = new Pen(Fade(P(t => t.Accent), w.Hover), 1f);
+                g.DrawLine(pen, r.X + r.Width / 2 - lw / 2, r.Y + size.Height, r.X + r.Width / 2 + lw / 2, r.Y + size.Height);
+            }
             return;
         }
 
-        int radius = w.Label is "×" or "–" ? Math.Min(theme.ButtonRadius, 10) : theme.ButtonRadius;
+        float radius = w.Label is "×" or "–" ? Math.Min(Radius(t => t.ButtonRadius), 10) : Radius(t => t.ButtonRadius);
         using var path = Rounded(r, radius);
 
         if (w.Primary)
         {
-            var top = Lerp(theme.Accent, Color.White, w.Hover * 0.12f);
-            using var fill = new LinearGradientBrush(r, Fade(top, a), Fade(theme.Accent2, a), 0f);
-            g.FillPath(fill, path);
-            var ink = IsLight(theme.Accent) ? Color.FromArgb(20, 22, 40) : Color.White;
-            string text = theme.Cased(w.Label);
-            string sub = w.Value?.Invoke() ?? "";
-            TextRenderer.DrawText(g, text, primary, Rectangle.Round(r), Fade(ink, a),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-            if (sub.Length > 0)
-                TextRenderer.DrawText(g, sub, value, Rectangle.Round(new RectangleF(r.X, r.Bottom - 20, r.Width - 16, 16)),
-                    Fade(ink, a * 0.75f), TextFormatFlags.Right);
+            DrawPrimary(g, w, r, path, a);
             return;
         }
 
-        var fillColor = Lerp(theme.Button, theme.ButtonHover, w.Hover);
-        fillColor = Lerp(fillColor, theme.ButtonPressed, w.Press);
-        if (w.Info) fillColor = Fade(theme.Button, 0.55f);
+        var fillColor = Lerp(P(t => t.Button), P(t => t.ButtonHover), w.Hover);
+        fillColor = Lerp(fillColor, P(t => t.ButtonPressed), w.Press);
+        if (w.Info) fillColor = Fade(P(t => t.Button), 0.55f);
         using (var fill = new SolidBrush(Fade(fillColor, a))) g.FillPath(fill, path);
+        DrawRipples(g, w, path, Color.White, 0.16f * a);
 
-        var edge = Lerp(theme.ButtonEdge, theme.Accent, w.Hover);
+        var edge = Lerp(P(t => t.ButtonEdge), P(t => t.Accent), w.Hover);
         if (edge.A > 0)
             using (var pen = new Pen(Fade(edge, a * edge.A / 255f), 1.5f)) g.DrawPath(pen, path);
 
         if (w.Label == "theme")
         {
-            TextRenderer.DrawText(g, theme.Name + (config.FollowGameTheme ? " ·" : ""), small, Rectangle.Round(r), Fade(theme.Text, a),
+            var chip = new Crossfade(theme.Name + (config.FollowGameTheme ? " ·" : "")) { T = 1f };
+            TextRenderer.DrawText(g, chip.Current, smallFont, Rectangle.Round(r), Fade(P(t => t.Text), a),
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             return;
         }
 
         if (w.Small)
         {
-            TextRenderer.DrawText(g, theme.Cased(w.Label), small, Rectangle.Round(r), Fade(theme.Text, a),
+            TextRenderer.DrawText(g, Cased(w.Label), smallFont, Rectangle.Round(r), Fade(P(t => t.Text), a),
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             return;
         }
 
         // row: light · label · value
         float textLeft = r.X + 18;
-        var light = w.Light?.Invoke();
-        if (light != null)
+        if (w.LightInit && w.LightKind != null)
         {
-            var lc = LightColor(light.Value);
-            float pulse = light == StatusKind.Busy ? 0.6f + 0.4f * MathF.Sin((float)Now * 9f) : 1f;
-            using var lb = new SolidBrush(Fade(lc, a * pulse));
             float d = 10;
-            g.FillEllipse(lb, r.X + 18, r.Y + r.Height / 2 - d / 2, d, d);
+            var centre = new PointF(r.X + 23, r.Y + r.Height / 2);
+            float pulse = w.LightKind == StatusKind.Busy ? 0.55f + 0.45f * MathF.Sin((float)Now * 7f) : 1f;
+            if (w.PingT >= 0f) // expanding ring when a row turns green
+            {
+                float pe = Motion.OutCubic(w.PingT);
+                float pr = 5f + 11f * pe;
+                using var ring = new Pen(Fade(w.LightNow, (1f - w.PingT) * 0.7f * a), 2f);
+                g.DrawEllipse(ring, centre.X - pr, centre.Y - pr, pr * 2, pr * 2);
+            }
+            if (w.LightKind == StatusKind.Busy) // soft halo that breathes with the light
+            {
+                float hr = 7f + 3f * pulse;
+                using var halo = new SolidBrush(Fade(w.LightNow, 0.18f * pulse * a));
+                g.FillEllipse(halo, centre.X - hr, centre.Y - hr, hr * 2, hr * 2);
+            }
+            using var lb = new SolidBrush(Fade(w.LightNow, a * pulse));
+            g.FillEllipse(lb, centre.X - d / 2, centre.Y - d / 2, d, d);
             textLeft = r.X + 40;
         }
-        TextRenderer.DrawText(g, theme.Cased(w.Label), label, new Point((int)textLeft, (int)(r.Y + r.Height / 2 - 11)), Fade(theme.Text, a));
-        string val = w.Value?.Invoke() ?? "";
-        TextRenderer.DrawText(g, val, value, Rectangle.Round(new RectangleF(r.X, r.Y, r.Width - 16, r.Height)), Fade(theme.SubText, a),
-            TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        TextRenderer.DrawText(g, Cased(w.Label), labelFont, new Point((int)textLeft, (int)(r.Y + r.Height / 2 - 11)), Fade(P(t => t.Text), a));
+        DrawCrossfade(g, w.ValueText, valueFont!, Rectangle.Round(new RectangleF(r.X, r.Y, r.Width - 16, r.Height)), P(t => t.SubText),
+            TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis, 7f, alpha: a);
     }
 
-    private void DrawLogo(Graphics g, RectangleF r)
+    private void DrawPrimary(Graphics g, Widget w, RectangleF r, GraphicsPath path, float a)
+    {
+        var top = Lerp(P(t => t.Accent), Color.White, w.Hover * 0.1f);
+        top = Lerp(top, Color.Black, w.Press * 0.12f);
+        using (var fill = new LinearGradientBrush(r, Fade(top, a), Fade(P(t => t.Accent2), a), 0f))
+            g.FillPath(fill, path);
+
+        // hover sheen: a diagonal band of light sweeps across, once every 1.6 s while hovered
+        if (w.Hover > 0.01f && w.EnabledT > 0.5f)
+        {
+            float phase = (sheen % 1.6f) / 1.1f;
+            if (phase <= 1f)
+            {
+                float bandW = r.Width * 0.35f;
+                float x = r.X - bandW + phase * (r.Width + bandW * 2);
+                var band = new RectangleF(x, r.Y, bandW, r.Height);
+                var clip = g.Clip;
+                g.SetClip(path);
+                using var shine = new LinearGradientBrush(band, Color.Transparent, Color.Transparent, 20f)
+                {
+                    InterpolationColors = new ColorBlend
+                    {
+                        Colors = new[] { Color.FromArgb(0, 255, 255, 255), Color.FromArgb((int)(70 * w.Hover), 255, 255, 255), Color.FromArgb(0, 255, 255, 255) },
+                        Positions = new[] { 0f, 0.5f, 1f },
+                    },
+                };
+                g.FillRectangle(shine, band);
+                g.Clip = clip;
+            }
+        }
+        DrawRipples(g, w, path, Color.White, 0.28f * a);
+
+        var ink = IsLight(P(t => t.Accent)) ? Color.FromArgb(20, 22, 40) : Color.White;
+        bool injected = injector.IsInjected;
+        string text = Cased(injected ? "Injected" : w.Label);
+        var textRect = Rectangle.Round(r);
+
+        if (injected)
+        {
+            // check mark draws itself on, then the label settles beside it
+            float ct = successT < 0f ? 1f : Math.Clamp(successT / 0.45f, 0f, 1f);
+            var size = TextRenderer.MeasureText(text, primaryFont);
+            float total = size.Width + 30f;
+            float left = r.X + r.Width / 2 - total / 2;
+            DrawCheck(g, new PointF(left + 10, r.Y + r.Height / 2), Motion.OutCubic(ct), Fade(ink, a));
+            textRect = Rectangle.Round(new RectangleF(left + 30, r.Y, size.Width + 4, r.Height));
+            float labelT = successT < 0f ? 1f : Math.Clamp((successT - 0.2f) / 0.35f, 0f, 1f);
+            TextRenderer.DrawText(g, text, primaryFont, textRect, Fade(ink, a * labelT), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        }
+        else
+        {
+            TextRenderer.DrawText(g, text, primaryFont, textRect, Fade(ink, a), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+
+        if (w.ValueText.Current.Length > 0 || w.ValueText.T < 1f)
+            DrawCrossfade(g, w.ValueText, valueFont!, Rectangle.Round(new RectangleF(r.X, r.Bottom - 22, r.Width - 16, 18)),
+                Fade(ink, 0.75f), TextFormatFlags.Right, 5f, alpha: a);
+    }
+
+    private static void DrawCheck(Graphics g, PointF c, float t, Color color)
+    {
+        var p0 = new PointF(c.X - 8, c.Y);
+        var p1 = new PointF(c.X - 2, c.Y + 6);
+        var p2 = new PointF(c.X + 9, c.Y - 7);
+        float l1 = Dist(p0, p1), l2 = Dist(p1, p2), drawn = (l1 + l2) * t;
+        using var pen = new Pen(color, 3.2f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        if (drawn <= 0f) return;
+        if (drawn <= l1) { g.DrawLine(pen, p0, Along(p0, p1, drawn / l1)); return; }
+        g.DrawLines(pen, new[] { p0, p1, Along(p1, p2, (drawn - l1) / l2) });
+    }
+
+    private static void DrawRipples(Graphics g, Widget w, GraphicsPath clipPath, Color color, float strength)
+    {
+        if (w.Ripples.Count == 0) return;
+        var clip = g.Clip;
+        g.SetClip(clipPath);
+        var b = clipPath.GetBounds();
+        foreach (var (at, t) in w.Ripples)
+        {
+            float maxR = new[] { Dist(at, new PointF(b.Left, b.Top)), Dist(at, new PointF(b.Right, b.Top)),
+                                 Dist(at, new PointF(b.Left, b.Bottom)), Dist(at, new PointF(b.Right, b.Bottom)) }.Max();
+            float radius = maxR * Motion.OutCubic(t);
+            using var brush = new SolidBrush(Fade(color, strength * (1f - t)));
+            g.FillEllipse(brush, at.X - radius, at.Y - radius, radius * 2, radius * 2);
+        }
+        g.Clip = clip;
+    }
+
+    private void DrawLogo(Graphics g, RectangleF r, float alpha)
     {
         // Three stacked "bundles": an original mark drawn from rounded rectangles.
         for (int i = 0; i < 3; i++)
         {
             var box = new RectangleF(r.X + i * 3, r.Y + 16 - i * 8, r.Width - 12, 12);
             using var path = Rounded(box, 3);
-            using var brush = new SolidBrush(Lerp(theme.Accent, theme.Accent2, i / 2f));
+            using var brush = new SolidBrush(Fade(Lerp(P(t => t.Accent), P(t => t.Accent2), i / 2f), alpha));
             g.FillPath(brush, path);
         }
     }
-
-    private Color LightColor(StatusKind k) => k switch
-    {
-        StatusKind.Ok => theme.Ok,
-        StatusKind.Busy => theme.Busy,
-        StatusKind.Error => theme.Error,
-        _ => theme.Idle,
-    };
 
     private Icon MakeIcon()
     {
@@ -585,13 +929,21 @@ public sealed class LauncherForm : Form
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             using (var bg = new SolidBrush(theme.PanelTop)) g.FillEllipse(bg, 0, 0, 63, 63);
-            DrawLogo(g, new RectangleF(14, 12, 44, 44));
+            for (int i = 0; i < 3; i++)
+            {
+                var box = new RectangleF(14 + i * 3, 28 - i * 8, 32, 12);
+                using var path = Rounded(box, 3);
+                using var brush = new SolidBrush(Lerp(theme.Accent, theme.Accent2, i / 2f));
+                g.FillPath(brush, path);
+            }
         }
         var handle = bmp.GetHicon();
         var icon = (Icon)Icon.FromHandle(handle).Clone();
         DestroyIcon(handle);
         return icon;
     }
+
+    // ================================================================== helpers
 
     private static GraphicsPath Rounded(RectangleF r, float radius)
     {
@@ -604,6 +956,9 @@ public sealed class LauncherForm : Form
         path.CloseFigure();
         return path;
     }
+
+    private static float Dist(PointF a, PointF b) => MathF.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+    private static PointF Along(PointF a, PointF b, float t) => new(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
 
     private static Color Fade(Color c, float a) => Color.FromArgb((int)Math.Clamp(c.A * a, 0, 255), c.R, c.G, c.B);
 
@@ -630,4 +985,32 @@ public sealed class LauncherForm : Form
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
     [DllImport("user32.dll")] private static extern bool DestroyIcon(IntPtr handle);
+    [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint ms);
+    [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint ms);
+}
+
+/// <summary>Frame-rate-independent easing helpers.</summary>
+internal static class Motion
+{
+    public static float OutCubic(float t) { t = Math.Clamp(t, 0f, 1f); float u = 1f - t; return 1f - u * u * u; }
+
+    public static float InOutCubic(float t)
+    {
+        t = Math.Clamp(t, 0f, 1f);
+        return t < 0.5f ? 4f * t * t * t : 1f - MathF.Pow(-2f * t + 2f, 3f) / 2f;
+    }
+
+    /// <summary>Exponential approach: same feel at 60 or 240 fps.</summary>
+    public static float Approach(float value, float target, float dt, float speed)
+    {
+        float next = value + (target - value) * (1f - MathF.Exp(-speed * dt));
+        return Math.Abs(next - target) < 0.0005f ? target : next;
+    }
+
+    public static Color Approach(Color value, Color target, float dt, float speed)
+    {
+        float k = 1f - MathF.Exp(-speed * dt);
+        int Step(int a, int b) { int n = (int)Math.Round(a + (b - a) * k); return n == a && a != b ? a + Math.Sign(b - a) : n; }
+        return Color.FromArgb(Step(value.A, target.A), Step(value.R, target.R), Step(value.G, target.G), Step(value.B, target.B));
+    }
 }
