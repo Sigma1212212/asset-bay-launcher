@@ -59,7 +59,8 @@ public sealed partial class LauncherForm
         DrawCrossfade(g, pageTitle, titleFont!, new Rectangle(ContentX, 18, 400, 36), P(t => t.Text), TextFormatFlags.Left, 8f);
         Ink.DrawText(g, PageSubtitles[(int)page], subtitleFont, new Point(ContentX + 2, 54), P(t => t.SubText));
 
-        if (config.ShowConsole || page == Page.Logs) DrawConsole(g);
+        if ((config.ShowConsole && page != Page.Designer) || page == Page.Logs) DrawConsole(g);
+        DrawDesignerPreview(g);
     }
 
     private void DrawConsole(Graphics g)
@@ -201,6 +202,12 @@ public sealed partial class LauncherForm
                 g.DrawEllipse(pen, x + s * 0.3f, y + 1, s * 0.4f, s - 2);
                 g.DrawLine(pen, x + 1, y + s / 2, x + s - 1, y + s / 2);
                 break;
+            case "Designer":
+                g.DrawRectangle(pen, x + 1, y + 1, s - 2, s - 2);
+                g.DrawLine(pen, x + 1, y + s * 0.35f, x + s - 1, y + s * 0.35f);
+                using (var dot = new SolidBrush(c)) g.FillEllipse(dot, x + s * 0.22f, y + s * 0.55f, s * 0.2f, s * 0.2f);
+                g.DrawLine(pen, x + s * 0.5f, y + s * 0.65f, x + s - 3, y + s * 0.65f);
+                break;
             case "Logs":
                 for (int i = 0; i < 4; i++) g.DrawLine(pen, x + 1, y + 2 + i * s * 0.28f, x + (i % 2 == 0 ? s - 1 : s * 0.65f), y + 2 + i * s * 0.28f);
                 break;
@@ -243,6 +250,15 @@ public sealed partial class LauncherForm
             using var bmp = new Bitmap(W, H);
             using (var g = Graphics.FromImage(bmp)) OnPaint(new PaintEventArgs(g, new Rectangle(0, 0, W, H)));
             bmp.Save(Path.Combine(folder, $"launcher_{p}.png"));
+
+            if (p == Page.Designer) // the designer has two halves; capture the second one as well
+            {
+                designerTab = 1;
+                using var second = new Bitmap(W, H);
+                using (var g = Graphics.FromImage(second)) OnPaint(new PaintEventArgs(g, new Rectangle(0, 0, W, H)));
+                second.Save(Path.Combine(folder, "launcher_Designer_Buttons.png"));
+                designerTab = 0;
+            }
         }
     }
 }

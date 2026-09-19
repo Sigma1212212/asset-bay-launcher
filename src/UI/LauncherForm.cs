@@ -78,6 +78,11 @@ public sealed partial class LauncherForm : Form
         public Func<float>? Meter;         // card: 0..1 usage bar
         public Func<bool>? Selected;       // nav: current page; toggle: on
         public Func<bool>? Shown;          // extra visibility rule (null = always)
+        public Func<Color>? Colour;        // designer: colour swatch
+        public bool Slider;                // designer: draggable value
+        public float Min, Max;
+        public Func<float>? SliderValue;
+        public Action<float>? SetSlider;
         public float Knob;                 // toggle knob position
 
         public float Hover, Press, EnabledT = 1f;
@@ -433,6 +438,7 @@ public sealed partial class LauncherForm : Form
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (pressed?.Slider == true) { DragSlider(pressed, e.Location); return; } // keep following the mouse
         var hit = HitTest(e.Location);
         if (hit != hovered)
         {
@@ -452,7 +458,12 @@ public sealed partial class LauncherForm : Form
     {
         base.OnMouseDown(e);
         var hit = HitTest(e.Location);
-        if (hit?.Click != null && hit.IsEnabled)
+        if (hit?.Slider == true)
+        {
+            pressed = hit;
+            DragSlider(hit, e.Location);
+        }
+        else if (hit?.Click != null && hit.IsEnabled)
         {
             pressed = hit;
             hit.Ripples.Add((e.Location, 0f)); // ripple starts exactly where you clicked
@@ -469,12 +480,12 @@ public sealed partial class LauncherForm : Form
     {
         base.OnMouseUp(e);
         var hit = HitTest(e.Location);
-        if (pressed != null && hit == pressed && pressed.IsEnabled) pressed.Click?.Invoke();
+        if (pressed != null && !pressed.Slider && hit == pressed && pressed.IsEnabled) pressed.Click?.Invoke();
         pressed = null;
     }
 
     private Widget? HitTest(Point p) =>
-        widgets.LastOrDefault(w => w.Click != null && OnPage(w) && (page != Page.Logs || w.Page < 0) && w.Rect.Contains(p));
+        widgets.LastOrDefault(w => (w.Click != null || w.Slider) && OnPage(w) && (page != Page.Logs || w.Page < 0) && w.Rect.Contains(p));
 
     // ================================================================== frame loop
 
@@ -513,6 +524,7 @@ public sealed partial class LauncherForm : Form
             w.Press = Motion.Approach(w.Press, w == pressed ? 1f : 0f, dt, 28f);
             w.EnabledT = Motion.Approach(w.EnabledT, enabled || w.Info ? 1f : 0f, dt, 9f);
 
+            if (w.Slider) w.ValueText.T = 1f;
             if (w.Toggle) w.Knob = Motion.Approach(w.Knob, w.Selected?.Invoke() == true ? 1f : 0f, dt, 14f);
             w.ValueText.Set(w.Value?.Invoke() ?? "");
             w.ValueText.T = Math.Min(1f, w.ValueText.T + dt / 0.28f);
@@ -767,6 +779,8 @@ public sealed partial class LauncherForm : Form
         }
         if (w.Card) { DrawCard(g, w, r, a); return; }
         if (w.Toggle) { DrawToggle(g, w, r, a); return; }
+        if (w.Slider) { DrawSlider(g, w, r, a); return; }
+        if (w.Colour != null) { DrawSwatch(g, w, r, a); return; }
 
         var fillColor = Lerp(P(t => t.Button), P(t => t.ButtonHover), w.Hover);
         fillColor = Lerp(fillColor, P(t => t.ButtonPressed), w.Press);

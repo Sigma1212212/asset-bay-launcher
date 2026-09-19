@@ -20,12 +20,13 @@ public sealed partial class LauncherForm
     private const int SideW = 208, ContentX = SideW + 24, ContentW = W - SideW - 48;
     private const int ToolbarY = 90, ContentY = 148, ConsoleTop = H - 178;
 
-    private enum Page { Home, Menu, Online, Logs, Settings }
-    private static readonly string[] PageTitles = { "Home", "Menu", "Online", "Logs", "Settings" };
+    private enum Page { Home, Menu, Designer, Online, Logs, Settings }
+    private static readonly string[] PageTitles = { "Home", "Menu", "Designer", "Online", "Logs", "Settings" };
     private static readonly string[] PageSubtitles =
     {
         "Inject the menu into Gorilla Tag and see what's going on.",
         "Which version of the menu you'll get, and your local test build.",
+        "Design your own menu look, then pick it in game under Theme.",
         "Your Asset Bay server: health and free-tier usage.",
         "Everything the launcher did this session.",
         "Launcher preferences.",
@@ -83,12 +84,13 @@ public sealed partial class LauncherForm
 
         BuildHome();
         BuildMenuPage();
+        BuildDesignerPage();
         BuildOnlinePage();
         BuildSettingsPage();
 
         // ---- console
         widgets.Add(new Widget { Rect = new RectangleF(W - 24 - 70, ConsoleTop + 5, 64, 22), Label = "clear", Small = true, Order = -1,
-                                 Shown = () => config.ShowConsole && page != Page.Logs, Click = () => { log.Clear(); Invalidate(); } });
+                                 Shown = () => config.ShowConsole && page != Page.Logs && page != Page.Designer, Click = () => { log.Clear(); Invalidate(); } });
         widgets.Add(new Widget { Rect = new RectangleF(W - 24 - 70, ContentY + 5, 64, 22), Label = "clear", Small = true, Order = -1,
                                  Shown = () => page == Page.Logs, Click = () => { log.Clear(); Invalidate(); } });
 
