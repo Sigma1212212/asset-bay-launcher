@@ -22,6 +22,8 @@ public sealed class LauncherConfig
     /// <summary>Match whatever theme the in-game menu last used.</summary>
     [JsonPropertyName("followGameTheme")] public bool FollowGameTheme { get; set; } = true;
     [JsonPropertyName("includePrereleases")] public bool IncludePrereleases { get; set; }
+    /// <summary>The Asset Bay server (Cloudflare Worker) - shown on the Online page.</summary>
+    [JsonPropertyName("backendUrl")] public string BackendUrl { get; set; } = "https://assetbay.randomthingsthatarecool.dev/asset-bay/";
 
     [JsonIgnore] public bool RepositoryConfigured =>
         Repository.Count(c => c == '/') == 1 && !Repository.StartsWith("YOUR-", StringComparison.OrdinalIgnoreCase);

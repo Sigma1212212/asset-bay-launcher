@@ -13,13 +13,14 @@ namespace AssetBayLauncher.UI;
 /// delta, so timing is identical at any frame rate. The frame loop runs at ~120 fps while anything moves
 /// and stops repainting entirely when the window is still.
 /// </summary>
-public sealed class LauncherForm : Form
+public sealed partial class LauncherForm : Form
 {
-    private const int W = 460, H = 612, Pad = 22;
+    private const int W = 980, H = 640, Pad = 22;
 
     private readonly LauncherConfig config;
     private readonly ReleaseUpdater updater;
     private readonly GameInjector injector;
+    private readonly BackendMonitor backend;
     private readonly List<Widget> widgets = new();
     private readonly System.Windows.Forms.Timer frame = new() { Interval = 8 };
     private readonly System.Windows.Forms.Timer poll = new() { Interval = 1000 };
@@ -70,8 +71,13 @@ public sealed class LauncherForm : Form
         public Func<StatusKind?>? Light;
         public Func<bool>? Enabled;
         public Action? Click;
-        public bool Primary, Small, Info;
+        public bool Primary, Small, Info, Nav, Card, Toggle;
         public int Order;
+        public int Page = -1;              // -1 = on every page
+        public Func<string>? Sub;          // card: small line under the value
+        public Func<float>? Meter;         // card: 0..1 usage bar
+        public Func<bool>? Selected;       // nav: current page; toggle: on
+        public float Knob;                 // toggle knob position
 
         public float Hover, Press, EnabledT = 1f;
         public readonly Crossfade ValueText = new("");
@@ -106,6 +112,7 @@ public sealed class LauncherForm : Form
         this.config = config;
         updater = new ReleaseUpdater(config);
         injector = new GameInjector(config);
+        backend = new BackendMonitor(config.BackendUrl);
         theme = (config.FollowGameTheme ? LauncherTheme.FromGame() : null) ?? LauncherTheme.ByName(config.Theme);
         paletteFrom = theme;
         statusColor = statusColorOld = theme.SubText;
@@ -152,87 +159,6 @@ public sealed class LauncherForm : Form
 
     // ================================================================== layout
 
-    private void BuildWidgets()
-    {
-        float x = Pad, w = W - Pad * 2, y = 118, rowH = 50, gap = 8;
-        int order = 0;
-
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(x, y, w, rowH), Label = "Gorilla Tag", Order = order++, Info = true,
-            Value = () => gameRunning ? (injector.IsInjected ? "running · menu loaded" : "running") : "not running",
-            Light = () => gameRunning ? StatusKind.Ok : StatusKind.Idle,
-        });
-        y += rowH + gap;
-
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(x, y, w, rowH), Label = "Latest release", Order = order++,
-            Value = () => releaseText, Light = () => releaseState,
-            Click = () => { nextReleaseCheck = DateTime.MinValue; CheckReleaseAsync(force: true); },
-        });
-        y += rowH + gap;
-
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(x, y, w, rowH), Label = "Menu copy", Order = order++, Info = true,
-            Value = () => menuCopyText,
-            Light = () => releaseCached || BundledMenu.Available ? StatusKind.Ok : StatusKind.Idle,
-        });
-        y += rowH + gap;
-
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(x, y, w, rowH), Label = "Local build", Order = order++, Info = true,
-            Value = () => localBuildText,
-            Light = () => localExists ? StatusKind.Ok : StatusKind.Idle,
-        });
-        y += rowH + 20;
-
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(x, y, w, 62), Label = "Inject latest", Primary = true, Order = order++,
-            Value = () => injector.IsInjected ? "" : release != null ? release.Tag : "",
-            Enabled = () => needsElevation || (!busy && gameRunning && !injector.IsInjected && (config.RepositoryConfigured || BundledMenu.Available)),
-            Click = () => { if (needsElevation) RestartElevated(); else RunAsync(InjectLatestAsync); },
-        });
-        y += 62 + 12;
-
-        float half = (w - 10) / 2f;
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(x, y, half, 48), Label = "Test local build", Small = true, Order = order++,
-            Enabled = () => !busy && gameRunning && !injector.IsInjected,
-            Click = () => RunAsync(InjectLocalAsync),
-        });
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(x + half + 10, y, half, 48), Label = "Eject", Small = true, Order = order,
-            Enabled = () => !busy && injector.IsInjected,
-            Click = () => RunAsync(EjectAsync),
-        });
-        order++;
-
-        // header controls
-        widgets.Add(new Widget { Rect = new RectangleF(W - Pad - 34, 24, 34, 34), Label = "×", Small = true, Order = -1, Click = Close });
-        widgets.Add(new Widget { Rect = new RectangleF(W - Pad - 34 - 42, 24, 34, 34), Label = "–", Small = true, Order = -1,
-                                 Click = Minimize });
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(W - Pad - 34 - 42 - 100, 28, 92, 26), Label = "theme", Small = true, Order = -1,
-            Click = CycleTheme,
-        });
-
-        // footer licence link
-        widgets.Add(new Widget
-        {
-            Rect = new RectangleF(x, H - 34, w, 20), Label = "MIT licence · third-party notices",
-            Order = -2, Click = OpenNotices,
-        });
-
-        foreach (var wd in widgets) wd.ValueText.Current = wd.Value?.Invoke() ?? "";
-    }
-
     private string MenuCopyText()
     {
         if (release != null && releaseCached) return $"downloaded {release.Tag}";
@@ -264,6 +190,8 @@ public sealed class LauncherForm : Form
         RefreshFileState();
 
         if (DateTime.UtcNow >= nextReleaseCheck) CheckReleaseAsync(force: false);
+        backend.RefreshAsync();
+        Invalidate(); // cards show live values
 
         // Follow the in-game menu's theme when it changes (checked every couple of seconds).
         if (config.FollowGameTheme && ++themePollTick % 2 == 0)
@@ -472,6 +400,7 @@ public sealed class LauncherForm : Form
 
     private void SetStatus(string text, StatusKind kind)
     {
+        Log(text, kind);
         statusColorOld = statusColor;
         statusKind = kind;
         if (!status.Set(text)) statusColorOld = StatusColorFor(kind); // same text, new colour: just recolour
@@ -525,7 +454,7 @@ public sealed class LauncherForm : Form
             pressed = hit;
             hit.Ripples.Add((e.Location, 0f)); // ripple starts exactly where you clicked
         }
-        else if (e.Button == MouseButtons.Left && e.Y < 100)
+        else if (e.Button == MouseButtons.Left && (e.Y < 80 || (e.X < SideW && e.Y < 96)))
         {
             // Drag the borderless window by its header.
             ReleaseCapture();
@@ -542,7 +471,7 @@ public sealed class LauncherForm : Form
     }
 
     private Widget? HitTest(Point p) =>
-        widgets.LastOrDefault(w => w.Click != null && w.Rect.Contains(p));
+        widgets.LastOrDefault(w => w.Click != null && OnPage(w) && (page != Page.Logs || w.Page < 0) && w.Rect.Contains(p));
 
     // ================================================================== frame loop
 
@@ -558,6 +487,7 @@ public sealed class LauncherForm : Form
         themeT = Math.Min(1f, themeT + dt / 0.4f);
         title.Set(injectedLabel.Length > 0 ? "Menu loaded" : "Ready");
         title.T = Math.Min(1f, title.T + dt / 0.3f);
+        pageTitle.T = Math.Min(1f, pageTitle.T + dt / 0.3f);
         status.T = Math.Min(1f, status.T + dt / 0.28f);
         statusColor = Motion.Approach(statusColor, StatusColorFor(statusKind), dt, 10f);
 
@@ -643,7 +573,7 @@ public sealed class LauncherForm : Form
 
     private bool IsAnimating()
     {
-        if (windowMotion != WindowMotion.Open || themeT < 1f || title.T < 1f || status.T < 1f) return true;
+        if (windowMotion != WindowMotion.Open || themeT < 1f || title.T < 1f || status.T < 1f || pageTitle.T < 1f) return true;
         if (Now - entranceStart < 1.2) return true;
         if (progressAlpha > 0.001f || successT is >= 0f and < 2f || hovered?.Primary == true) return true;
         if (Math.Abs(statusColor.ToArgb() - StatusColorFor(statusKind).ToArgb()) > 0 && status.T < 1f) return true;
@@ -652,7 +582,8 @@ public sealed class LauncherForm : Form
             if (w.Ripples.Count > 0 || w.PingT >= 0f || w.ValueText.T < 1f) return true;
             if (Math.Abs(w.Hover - (w == hovered && w.IsEnabled ? 1f : 0f)) > 0.003f) return true;
             if (w.Press > 0.003f || Math.Abs(w.EnabledT - (w.IsEnabled || w.Info ? 1f : 0f)) > 0.003f) return true;
-            if (w.LightKind == StatusKind.Busy) return true; // breathing light
+            if (w.LightKind == StatusKind.Busy && OnPage(w)) return true; // breathing light
+            if (w.Toggle && Math.Abs(w.Knob - (w.Selected?.Invoke() == true ? 1f : 0f)) > 0.003f) return true;
             if (w.LightInit && w.LightKind != null && w.LightNow.ToArgb() != LightColor(w.LightKind.Value).ToArgb()) return true;
         }
         return false;
@@ -730,31 +661,8 @@ public sealed class LauncherForm : Form
         g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
-        // background + gradient rim
-        using (var bg = new LinearGradientBrush(ClientRectangle, P(t => t.PanelTop), P(t => t.PanelBottom), 90f))
-            g.FillRectangle(bg, ClientRectangle);
-        using (var rimPath = Rounded(new RectangleF(1, 1, W - 2, H - 2), 8))
-        using (var rimBrush = new LinearGradientBrush(ClientRectangle, P(t => t.EdgeTop), P(t => t.EdgeBottom), 90f))
-        using (var rim = new Pen(rimBrush, 2f))
-            g.DrawPath(rim, rimPath);
-
-        // header
-        DrawLogo(g, new RectangleF(Pad, 28, 30, 30), 1f);
-        TextRenderer.DrawText(g, "ASSET BAY  ·  LAUNCHER", brandFont, new Point(Pad + 40, 28), P(t => t.SubText));
-        DrawCrossfade(g, title, titleFont!, new Rectangle(Pad + 36, 42, 260, 40), P(t => t.Text), TextFormatFlags.Left, 10f);
-
-        // accent line grows out from the centre with the entrance
-        float lineT = (float)Math.Clamp((Now - entranceStart) / 0.5, 0, 1);
-        float lineW = (W - Pad * 2) * Motion.OutCubic(lineT);
-        if (lineW > 1f)
-            using (var accent = new LinearGradientBrush(new RectangleF(Pad, 96, W - Pad * 2, 3), P(t => t.Accent), P(t => t.Accent2), 0f))
-                g.FillRectangle(accent, W / 2f - lineW / 2f, 96, lineW, 3);
-
+        PaintChrome(g);
         foreach (var w in widgets) DrawWidget(g, w);
-
-        DrawProgress(g);
-        DrawCrossfade(g, status, valueFont!, new Rectangle(Pad, H - 74, W - Pad * 2, 36), statusColor,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis, 8f, statusColorOld);
     }
 
     /// <summary>Old text slides up and fades out while the new one rises in from below.</summary>
@@ -803,8 +711,10 @@ public sealed class LauncherForm : Form
 
     private void DrawWidget(Graphics g, Widget w)
     {
+        if (!OnPage(w) || (page == Page.Logs && w.Page >= 0)) return;
         var (offset, alpha) = Entrance(w.Order);
         if (alpha <= 0f) return;
+        if (w.Nav) { DrawNav(g, w, w.Rect); return; }
 
         float scale = 1f + w.Hover * (w.Primary ? 0.018f : 0.012f) - w.Press * 0.035f;
         var r = w.Rect;
@@ -834,6 +744,8 @@ public sealed class LauncherForm : Form
             DrawPrimary(g, w, r, path, a);
             return;
         }
+        if (w.Card) { DrawCard(g, w, r, a); return; }
+        if (w.Toggle) { DrawToggle(g, w, r, a); return; }
 
         var fillColor = Lerp(P(t => t.Button), P(t => t.ButtonHover), w.Hover);
         fillColor = Lerp(fillColor, P(t => t.ButtonPressed), w.Press);
@@ -893,7 +805,7 @@ public sealed class LauncherForm : Form
     {
         var top = Lerp(P(t => t.Accent), Color.White, w.Hover * 0.1f);
         top = Lerp(top, Color.Black, w.Press * 0.12f);
-        using (var fill = new LinearGradientBrush(r, Fade(top, a), Fade(P(t => t.Accent2), a), 0f))
+        using (var fill = new SolidBrush(Fade(top, a)))
             g.FillPath(fill, path);
 
         // hover sheen: a diagonal band of light sweeps across, once every 1.6 s while hovered
@@ -924,6 +836,7 @@ public sealed class LauncherForm : Form
         var ink = IsLight(P(t => t.Accent)) ? Color.FromArgb(20, 22, 40) : Color.White;
         bool injected = injector.IsInjected;
         string text = Cased(injected ? "Injected" : needsElevation ? "Restart as admin" : w.Label);
+        var primaryFont = smallFont;
         var textRect = Rectangle.Round(r);
 
         if (injected)
