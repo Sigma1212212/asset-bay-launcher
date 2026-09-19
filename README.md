@@ -8,8 +8,14 @@ run `AssetBayLauncher.exe`, click **Inject latest**, then press Tab in game (Y o
 ## Where the menu comes from
 
 1. **GitHub first.** Every Inject checks the menu repo's newest release. If it's newer than what you have,
-   the launcher downloads it and **verifies its SHA-256** before injecting. A file that fails the check is never used.
-2. **Built into the exe.** Each launcher release carries a copy of the newest menu at the time it was built.
+   the launcher downloads it and checks two things before injecting:
+   - its **SHA-256**, which catches corrupted downloads
+   - its **signature** against the Asset Bay release key built into the launcher, which catches anything not
+     published by the key holder, even if someone took over the GitHub account
+
+   A file that fails either check is never used.
+2. **Built into the exe.** Each launcher release carries a signed copy of the newest menu at the time it was built.
+   Its signature is checked too before it's used.
    It's used when GitHub can't be reached, and it saves a download when it's already the latest version.
 
 So publishing a new menu release updates everyone, and nobody needs to download a new launcher for it.

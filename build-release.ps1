@@ -33,12 +33,15 @@ if ($MenuTag -eq "") {
     if ($LASTEXITCODE -ne 0) { throw "Couldn't find a release in $menuRepo." }
 }
 Write-Host "Bundling menu $MenuTag from $menuRepo..." -ForegroundColor Cyan
-& gh release download $MenuTag --repo $menuRepo --pattern "BundleMenu.dll" --pattern "BundleMenu.dll.sha256" --dir $bundled
+& gh release download $MenuTag --repo $menuRepo --pattern "BundleMenu.dll" --pattern "BundleMenu.dll.sha256" --pattern "BundleMenu.dll.sig" --dir $bundled
 if ($LASTEXITCODE -ne 0) { throw "Download of $MenuTag failed." }
 
 $expected = ((Get-Content (Join-Path $bundled "BundleMenu.dll.sha256") -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
 $actual = (Get-FileHash (Join-Path $bundled "BundleMenu.dll") -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($expected -ne $actual) { throw "BundleMenu.dll from $MenuTag failed its SHA-256 check." }
+if (-not (Test-Path (Join-Path $bundled "BundleMenu.dll.sig"))) {
+    throw "$MenuTag has no BundleMenu.dll.sig - the launcher would refuse it. Publish a signed menu release first."
+}
 [IO.File]::WriteAllText((Join-Path $bundled "version.txt"), $MenuTag)
 Remove-Item (Join-Path $bundled "BundleMenu.dll.sha256")
 

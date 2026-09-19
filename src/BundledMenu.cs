@@ -15,17 +15,31 @@ public static class BundledMenu
         return raw == null ? null : System.Text.Encoding.UTF8.GetString(raw).Trim();
     });
 
+    private static readonly Lazy<string?> Signature = new(() =>
+    {
+        var raw = Read("BundledMenu.sig");
+        return raw == null ? null : System.Text.Encoding.UTF8.GetString(raw).Trim();
+    });
+
     public static bool Available => Bytes.Value is { Length: > 0 };
 
     /// <summary>Release tag the built-in copy came from, e.g. "v1.0.0".</summary>
     public static string Version => Tag.Value is { Length: > 0 } t ? t : "built-in";
 
-    /// <summary>Writes the built-in DLL to the cache (once) and returns its path.</summary>
+    /// <summary>
+    /// Verifies the built-in DLL's signature and writes it to the cache, rewriting the file whenever its
+    /// contents differ from what's embedded (so a swapped file on disk is never injected).
+    /// </summary>
     public static string Extract()
     {
         var bytes = Bytes.Value ?? throw new InvalidOperationException("This launcher was built without a built-in menu.");
+        ReleaseSignature.Verify(bytes, Signature.Value, $"The built-in menu {Version}");
+
         string path = Path.Combine(ReleaseUpdater.CacheRoot, "built-in", Version, "BundleMenu.dll");
-        if (!File.Exists(path) || new FileInfo(path).Length != bytes.Length)
+        bool same = File.Exists(path) &&
+                    System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))
+                        .AsSpan().SequenceEqual(System.Security.Cryptography.SHA256.HashData(bytes));
+        if (!same)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             File.WriteAllBytes(path, bytes);

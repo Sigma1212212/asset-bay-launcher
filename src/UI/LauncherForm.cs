@@ -44,6 +44,10 @@ public sealed class LauncherForm : Form
     private DateTime nextReleaseCheck = DateTime.MinValue;
     private int themePollTick;
 
+    // Refreshed once a second by Poll(): nothing below touches the disk or the process list per frame.
+    private bool releaseCached, localExists;
+    private string menuCopyText = "", localBuildText = "";
+
     // animated state
     private float windowT;                 // 0 hidden .. 1 shown
     private enum WindowMotion { Opening, Open, Closing, Minimizing }
@@ -172,16 +176,16 @@ public sealed class LauncherForm : Form
         widgets.Add(new Widget
         {
             Rect = new RectangleF(x, y, w, rowH), Label = "Menu copy", Order = order++, Info = true,
-            Value = MenuCopyText,
-            Light = () => (release != null && updater.IsCached(release)) || BundledMenu.Available ? StatusKind.Ok : StatusKind.Idle,
+            Value = () => menuCopyText,
+            Light = () => releaseCached || BundledMenu.Available ? StatusKind.Ok : StatusKind.Idle,
         });
         y += rowH + gap;
 
         widgets.Add(new Widget
         {
             Rect = new RectangleF(x, y, w, rowH), Label = "Local build", Order = order++, Info = true,
-            Value = () => LocalBuildText(),
-            Light = () => File.Exists(config.ResolvedLocalDll) ? StatusKind.Ok : StatusKind.Idle,
+            Value = () => localBuildText,
+            Light = () => localExists ? StatusKind.Ok : StatusKind.Idle,
         });
         y += rowH + 20;
 
@@ -231,7 +235,7 @@ public sealed class LauncherForm : Form
 
     private string MenuCopyText()
     {
-        if (release != null && updater.IsCached(release)) return $"downloaded {release.Tag}";
+        if (release != null && releaseCached) return $"downloaded {release.Tag}";
         if (BundledMenu.Available)
             return release == null || release.Tag == BundledMenu.Version
                 ? $"built in {BundledMenu.Version}"
@@ -254,8 +258,10 @@ public sealed class LauncherForm : Form
 
     private void Poll()
     {
-        gameRunning = injector.GameProcess() != null;
+        injector.Refresh();
+        gameRunning = injector.GameRunning;
         if (!gameRunning) injectedLabel = "";
+        RefreshFileState();
 
         if (DateTime.UtcNow >= nextReleaseCheck) CheckReleaseAsync(force: false);
 
@@ -265,6 +271,14 @@ public sealed class LauncherForm : Form
             var gameTheme = LauncherTheme.FromGame();
             if (gameTheme != null && gameTheme != theme) SetTheme(gameTheme, fromGame: true);
         }
+    }
+
+    private void RefreshFileState()
+    {
+        releaseCached = release != null && updater.IsCached(release);
+        localExists = File.Exists(config.ResolvedLocalDll);
+        localBuildText = LocalBuildText();
+        menuCopyText = MenuCopyText();
     }
 
     private async void CheckReleaseAsync(bool force)
@@ -283,6 +297,7 @@ public sealed class LauncherForm : Form
             bool newer = release != null && latest.Tag != release.Tag;
             release = latest;
             releaseText = latest.Tag + (updater.IsCached(latest) ? "" : " · new");
+            RefreshFileState();
             releaseState = StatusKind.Ok;
             if (newer && injector.IsInjected)
                 SetStatus($"{latest.Tag} is out - eject and inject to update.", StatusKind.Busy);
@@ -301,7 +316,7 @@ public sealed class LauncherForm : Form
         busy = true;
         try { await action(); }
         catch (Exception e) { SetStatus(e.Message, StatusKind.Error); progress = -1f; }
-        finally { busy = false; }
+        finally { busy = false; RefreshFileState(); }
     }
 
     /// <summary>
@@ -318,7 +333,7 @@ public sealed class LauncherForm : Form
             releaseText = release.Tag;
             releaseState = StatusKind.Ok;
 
-            if (BundledMenu.Available && release.Tag == BundledMenu.Version && !updater.IsCached(release))
+            if (BundledMenu.Available && release.Tag == BundledMenu.Version && !releaseCached)
             {
                 path = BundledMenu.Extract();
             }
@@ -362,6 +377,7 @@ public sealed class LauncherForm : Form
             path = dialog.FileName;
             config.LocalDllPath = path;
             config.Save();
+            RefreshFileState();
         }
 
         SetStatus("Injecting local build...", StatusKind.Busy);
@@ -395,7 +411,9 @@ public sealed class LauncherForm : Form
         themeT = 0f;
         config.Theme = next.Name;
         config.Save();
+        var oldIcon = Icon;
         Icon = MakeIcon();
+        oldIcon?.Dispose();
         if (fromGame) SetStatus($"Matched the in-game theme: {next.Name}", StatusKind.Idle);
     }
 
@@ -557,7 +575,9 @@ public sealed class LauncherForm : Form
         }
 
         float e = windowMotion is WindowMotion.Opening or WindowMotion.Open ? Motion.OutCubic(windowT) : windowT * windowT;
-        Opacity = e;
+        // Setting Opacity makes Windows re-composite the layered window, so only do it when it changes.
+        if (Math.Abs(Opacity - e) > 0.002) Opacity = e;
+        else if (e >= 1f && Opacity < 1.0) Opacity = 1.0;
         if (WindowState == FormWindowState.Normal && windowMotion != WindowMotion.Open)
             Location = new Point(restLocation.X, restLocation.Y + (int)Math.Round((1f - e) * 16f));
 

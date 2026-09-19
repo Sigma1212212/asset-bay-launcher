@@ -4,7 +4,8 @@ using System.Text.Json;
 
 namespace AssetBayLauncher;
 
-public sealed record ReleaseInfo(string Tag, string Name, string DownloadUrl, long Size, string? Sha256, string? ChecksumUrl, DateTimeOffset Published);
+public sealed record ReleaseInfo(string Tag, string Name, string DownloadUrl, long Size, string? Sha256, string? ChecksumUrl,
+    string? SignatureUrl, DateTimeOffset Published);
 
 /// <summary>
 /// Finds the newest release of the configured repository and keeps a verified copy of its DLL in
@@ -61,12 +62,13 @@ public sealed class ReleaseUpdater
         var published = release.TryGetProperty("published_at", out var p) && p.ValueKind == JsonValueKind.String
             ? DateTimeOffset.Parse(p.GetString()!) : DateTimeOffset.MinValue;
 
-        JsonElement? dll = null, checksum = null;
+        JsonElement? dll = null, checksum = null, signature = null;
         foreach (var asset in release.GetProperty("assets").EnumerateArray())
         {
             string assetName = asset.GetProperty("name").GetString() ?? "";
             if (assetName.Equals(config.AssetName, StringComparison.OrdinalIgnoreCase)) dll = asset;
             else if (assetName.Equals(config.AssetName + ".sha256", StringComparison.OrdinalIgnoreCase)) checksum = asset;
+            else if (assetName.Equals(config.AssetName + ".sig", StringComparison.OrdinalIgnoreCase)) signature = asset;
         }
         if (dll is null)
             throw new InvalidOperationException($"Release {tag} has no {config.AssetName} attached.");
@@ -79,6 +81,7 @@ public sealed class ReleaseUpdater
             dll.Value.GetProperty("size").GetInt64(),
             sha,
             checksum?.GetProperty("browser_download_url").GetString(),
+            signature?.GetProperty("browser_download_url").GetString(),
             published);
     }
 
@@ -86,6 +89,8 @@ public sealed class ReleaseUpdater
         Path.Combine(CacheRoot, SafeFolder(release.Tag), config.AssetName);
 
     public bool IsCached(ReleaseInfo release) => File.Exists(CachedPath(release));
+
+    private string SignaturePath(ReleaseInfo release) => CachedPath(release) + ".sig";
 
     /// <summary>Returns the path of a verified local copy, downloading it first if needed.</summary>
     public async Task<string> EnsureDownloadedAsync(ReleaseInfo release, IProgress<float> progress, CancellationToken ct = default)
@@ -95,8 +100,17 @@ public sealed class ReleaseUpdater
                 "This release has no SHA-256 to check the download against. Re-publish it with publish.ps1.");
 
         string target = CachedPath(release);
+        string sigPath = SignaturePath(release);
+
+        // The signature is fetched every time (it's tiny) so a cached DLL is re-checked against the release.
+        if (release.SignatureUrl is null)
+            throw new InvalidOperationException($"Release {release.Tag} isn't signed, so it wasn't injected.");
+        string signature = (await Http.GetStringAsync(release.SignatureUrl, ct)).Trim();
+
         if (File.Exists(target) && HashFile(target).Equals(expected, StringComparison.OrdinalIgnoreCase))
         {
+            ReleaseSignature.Verify(await File.ReadAllBytesAsync(target, ct), signature, $"{config.AssetName} {release.Tag}");
+            await File.WriteAllTextAsync(sigPath, signature, ct);
             progress.Report(1f);
             return target;
         }
@@ -128,7 +142,18 @@ public sealed class ReleaseUpdater
             throw new InvalidOperationException($"Download failed its integrity check (SHA-256 mismatch). Nothing was injected.");
         }
 
+        try
+        {
+            ReleaseSignature.Verify(await File.ReadAllBytesAsync(temp, ct), signature, $"{config.AssetName} {release.Tag}");
+        }
+        catch
+        {
+            File.Delete(temp);
+            throw;
+        }
+
         File.Move(temp, target, overwrite: true);
+        await File.WriteAllTextAsync(sigPath, signature, ct);
         PruneOldVersions(keep: SafeFolder(release.Tag));
         progress.Report(1f);
         return target;

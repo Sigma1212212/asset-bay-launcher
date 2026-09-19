@@ -6,24 +6,53 @@ namespace AssetBayLauncher;
 /// <summary>
 /// Thin wrapper over SharpMonoInjector (MIT). Loads the DLL's bytes into the game's Mono runtime and calls
 /// its static entry method; remembers the returned assembly handle so the same session can eject it again.
+///
+/// Finding the game means enumerating every process on the PC, so that only happens in <see cref="Refresh"/>
+/// (about once a second). Everything the UI asks every frame reads cached values.
 /// </summary>
 public sealed class GameInjector : IDisposable
 {
     private readonly LauncherConfig config;
     private Injector? injector;
     private IntPtr assembly;
-    private int injectedPid;
+    private volatile int injectedPid;
+    private volatile int gamePid;
 
     public GameInjector(LauncherConfig config) => this.config = config;
 
-    public bool IsInjected => assembly != IntPtr.Zero && GameProcess()?.Id == injectedPid;
+    public bool GameRunning => gamePid != 0;
+    public bool IsInjected => assembly != IntPtr.Zero && injectedPid != 0 && injectedPid == gamePid;
 
-    public Process? GameProcess() =>
-        Process.GetProcessesByName(config.ProcessName).OrderBy(p => p.StartTime).FirstOrDefault();
+    /// <summary>Re-scan for the game. Call about once a second, never per frame.</summary>
+    public void Refresh()
+    {
+        Process[] found;
+        try { found = Process.GetProcessesByName(config.ProcessName); }
+        catch { found = Array.Empty<Process>(); }
+
+        try
+        {
+            // Lowest PID is a stable choice that needs no special access (StartTime throws for elevated processes).
+            int pid = 0;
+            foreach (var p in found)
+            {
+                try { if (!p.HasExited && (pid == 0 || p.Id < pid)) pid = p.Id; }
+                catch { if (pid == 0 || p.Id < pid) pid = p.Id; } // HasExited can be denied; the PID is still valid
+            }
+            gamePid = pid;
+        }
+        finally
+        {
+            foreach (var p in found) p.Dispose(); // each Process holds an OS handle
+        }
+
+        if (gamePid == 0 && injectedPid != 0) ResetInjector(); // game closed: drop the stale handle
+    }
 
     public void Inject(string dllPath)
     {
-        var game = GameProcess() ?? throw new InvalidOperationException($"{config.ProcessName} isn't running.");
+        Refresh();
+        if (gamePid == 0) throw new InvalidOperationException($"{config.ProcessName} isn't running.");
         if (IsInjected) throw new InvalidOperationException("Already injected - eject first to load a different build.");
 
         byte[] bytes = File.ReadAllBytes(dllPath);
@@ -31,14 +60,14 @@ public sealed class GameInjector : IDisposable
             throw new InvalidOperationException($"{Path.GetFileName(dllPath)} is not a .NET DLL.");
 
         ResetInjector();
-        injector = new Injector(game.Id);
+        injector = new Injector(gamePid);
         if (!injector.Is64Bit)
             throw new InvalidOperationException("The game process is 32-bit; this launcher only supports 64-bit.");
 
         assembly = injector.Inject(bytes, config.EntryNamespace, config.EntryClass, config.EntryMethod);
         if (assembly == IntPtr.Zero)
             throw new InvalidOperationException("The game's Mono runtime refused the DLL (entry point not found?).");
-        injectedPid = game.Id;
+        injectedPid = gamePid;
     }
 
     public void Eject()

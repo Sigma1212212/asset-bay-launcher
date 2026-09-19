@@ -32,6 +32,8 @@
     <EmbeddedResource Include="$(BundledMenuDir)\BundleMenu.dll" LogicalName="BundledMenu.dll" />
     <EmbeddedResource Include="$(BundledMenuDir)\version.txt" LogicalName="BundledMenu.version"
                       Condition="Exists('$(BundledMenuDir)\version.txt')" />
+    <EmbeddedResource Include="$(BundledMenuDir)\BundleMenu.dll.sig" LogicalName="BundledMenu.sig"
+                      Condition="Exists('$(BundledMenuDir)\BundleMenu.dll.sig')" />
   </ItemGroup>
 
   <ItemGroup>
