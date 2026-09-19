@@ -63,13 +63,44 @@ public sealed record LauncherTheme(
         H(0xFFF8E6), H(0xFFFDF4), H(0xE9D9B4), H(0x6B3F22, 70),
         H(0x2B1D12), H(0x7D6247), H(0xB9A27E), H(0xC98A2E), H(0x3E7D3A), H(0xA8322D), 16, 10, false);
 
-    public static readonly LauncherTheme[] All = { Halo, Solstice, Circuit, Velvet, Arcade, Graphite, Neon, Timber, Parchment };
+    public static readonly LauncherTheme Lava = new("Lava",
+        H(0x221410), H(0x0E0806), H(0xFF7A1A), H(0xC2270E), H(0xFF7A1A), H(0xFF3B1F),
+        H(0x3A2119), H(0x55291A), H(0x7A3417), H(0xFF7A1A, 90),
+        H(0xFFE9D6), H(0xC08A6E), H(0x5A3A2E), H(0xFFB547), H(0x9BE36B), H(0xFF3B1F), 20, 12, false);
+
+    public static readonly LauncherTheme Frost = new("Frost",
+        H(0xF4FAFF), H(0xDCEBF7), H(0xA9D6F5), H(0x7FB7E0), H(0x2F8FD8), H(0x5CC6F2),
+        H(0xFFFFFF), H(0xEEF7FF), H(0xCFE6F7), H(0xB9D9F0),
+        H(0x16324A), H(0x6B8BA6), H(0xB8CCDD), H(0xE8A33A), H(0x2DB37A), H(0xE0455A), 24, 14, false);
+
+    public static readonly LauncherTheme Candy = new("Candy",
+        H(0xFFE3F1), H(0xFFCFE6), H(0xFF8FC7), H(0xC98BFF), H(0xFF5FA8), H(0x7FE3C4),
+        H(0xFFFFFF), H(0xFFF2F8), H(0xFFD6EA), H(0xFFB3D6),
+        H(0x5A2A4A), H(0xB07A9A), H(0xE7B7CF), H(0xFFB547), H(0x3CCB9A), H(0xFF4F7B), 30, 20, false);
+
+    public static readonly LauncherTheme Forest = new("Forest",
+        H(0x1E3322), H(0x122017), H(0x6B4A2B), H(0x4A3219), H(0x8FD16A), H(0xE3C45A),
+        H(0x2C4A31), H(0x375C3D), H(0x44704A), H(0x8FD16A, 60),
+        H(0xEAF5DF), H(0x9DB58E), H(0x3D5A42), H(0xE3C45A), H(0x8FD16A), H(0xE0664F), 18, 12, false);
+
+    public static readonly LauncherTheme Retro = new("Retro",
+        H(0xE8DDC4), H(0xD4C6A6), H(0x9C8C6A), H(0x7A6B4E), H(0xD9621E), H(0x3C7A8C),
+        H(0xF4EEDF), H(0xFFF9EC), H(0xDCD0B4), H(0x9C8C6A, 180),
+        H(0x3A2F22), H(0x7F705A), H(0xB7A988), H(0xD9A21E), H(0x4C9A2A), H(0xC0392B), 14, 8, true);
+
+    public static readonly LauncherTheme Abyss = new("Abyss",
+        H(0x0B2A33), H(0x04141A), H(0x1FB5C9), H(0x0B5E6E), H(0x3FF0E0), H(0x7A8CFF),
+        H(0x0F3A45), H(0x145060), H(0x1B6678), H(0x3FF0E0, 60),
+        H(0xDDFBF8), H(0x7FB3B8), H(0x1E4C56), H(0xF2C14E), H(0x3FF0E0), H(0xFF6B8A), 22, 14, false);
+
+    public static readonly LauncherTheme[] All = { Halo, Solstice, Circuit, Velvet, Arcade, Graphite, Neon, Timber, Parchment, Lava, Frost, Candy, Forest, Retro, Abyss };
 
     /// <summary>The in-game ThemePreset enum index -> launcher palette (Custom/Glass have no twin).</summary>
     private static readonly Dictionary<int, LauncherTheme> GameIndex = new()
     {
         [0] = Halo, [1] = Solstice, [2] = Circuit, [3] = Velvet, [5] = Arcade, [6] = Halo,
         [7] = Graphite, [8] = Neon, [9] = Timber, [10] = Parchment,
+        [11] = Lava, [12] = Frost, [13] = Candy, [14] = Forest, [15] = Retro, [16] = Abyss,
     };
 
     public static LauncherTheme ByName(string? name) =>
