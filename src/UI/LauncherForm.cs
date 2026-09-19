@@ -193,8 +193,8 @@ public sealed class LauncherForm : Form
         {
             Rect = new RectangleF(x, y, w, 62), Label = "Inject latest", Primary = true, Order = order++,
             Value = () => injector.IsInjected ? "" : release != null ? release.Tag : "",
-            Enabled = () => !busy && gameRunning && !injector.IsInjected && (config.RepositoryConfigured || BundledMenu.Available),
-            Click = () => RunAsync(InjectLatestAsync),
+            Enabled = () => needsElevation || (!busy && gameRunning && !injector.IsInjected && (config.RepositoryConfigured || BundledMenu.Available)),
+            Click = () => { if (needsElevation) RestartElevated(); else RunAsync(InjectLatestAsync); },
         });
         y += 62 + 12;
 
@@ -310,12 +310,59 @@ public sealed class LauncherForm : Form
         }
     }
 
+    private bool needsElevation;
+
+    private static bool IsElevated
+    {
+        get
+        {
+            try
+            {
+                using var id = System.Security.Principal.WindowsIdentity.GetCurrent();
+                return new System.Security.Principal.WindowsPrincipal(id).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+            }
+            catch { return false; }
+        }
+    }
+
+    private void RestartElevated()
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(Environment.ProcessPath ?? Application.ExecutablePath)
+            {
+                UseShellExecute = true,
+                Verb = "runas", // shows the Windows "allow this app to make changes" prompt
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+            Close();
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            SetStatus("Restart cancelled. Or close Gorilla Tag and start it normally (not as administrator).", StatusKind.Error);
+        }
+    }
+
     private async void RunAsync(Func<Task> action)
     {
         if (busy) return;
         busy = true;
         try { await action(); }
-        catch (Exception e) { SetStatus(e.Message, StatusKind.Error); progress = -1f; }
+        catch (Exception e)
+        {
+            progress = -1f;
+            // Windows refused access to the game: nearly always because the game runs as administrator
+            // and the launcher doesn't. Offer a one-click elevated restart instead of a cryptic error.
+            if (e.Message.IndexOf("open process", StringComparison.OrdinalIgnoreCase) >= 0 && !IsElevated)
+            {
+                needsElevation = true;
+                SetStatus("Gorilla Tag is running as administrator, so the launcher needs to be too. Click Restart as admin.", StatusKind.Error);
+            }
+            else
+            {
+                SetStatus(e.Message, StatusKind.Error);
+            }
+        }
         finally { busy = false; RefreshFileState(); }
     }
 
@@ -876,7 +923,7 @@ public sealed class LauncherForm : Form
 
         var ink = IsLight(P(t => t.Accent)) ? Color.FromArgb(20, 22, 40) : Color.White;
         bool injected = injector.IsInjected;
-        string text = Cased(injected ? "Injected" : w.Label);
+        string text = Cased(injected ? "Injected" : needsElevation ? "Restart as admin" : w.Label);
         var textRect = Rectangle.Round(r);
 
         if (injected)
