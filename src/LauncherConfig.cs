@@ -33,6 +33,8 @@ public sealed class LauncherConfig
     [JsonPropertyName("textCase")] public string TextCase { get; set; } = "theme";
     /// <summary>"flat", "gradient" or "grid".</summary>
     [JsonPropertyName("background")] public string Background { get; set; } = "flat";
+    /// <summary>Your own Spotify app's Client ID (from developer.spotify.com). No secret is needed.</summary>
+    [JsonPropertyName("spotifyClientId")] public string SpotifyClientId { get; set; } = "";
     [JsonPropertyName("depth")] public bool Depth { get; set; } = true;
     [JsonPropertyName("animations")] public bool Animations { get; set; } = true;
     [JsonPropertyName("showConsole")] public bool ShowConsole { get; set; } = true;

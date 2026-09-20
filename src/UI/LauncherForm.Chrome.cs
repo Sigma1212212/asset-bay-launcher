@@ -208,6 +208,11 @@ public sealed partial class LauncherForm
                 using (var dot = new SolidBrush(c)) g.FillEllipse(dot, x + s * 0.22f, y + s * 0.55f, s * 0.2f, s * 0.2f);
                 g.DrawLine(pen, x + s * 0.5f, y + s * 0.65f, x + s - 3, y + s * 0.65f);
                 break;
+            case "Spotify":
+                g.DrawEllipse(pen, x + 1, y + 1, s - 2, s - 2);
+                for (int i = 0; i < 3; i++)
+                    g.DrawArc(pen, x + 3 + i * 2.5f, y + 4 + i * 2.5f, s - 6 - i * 5f, s - 9 - i * 4f, -30, 80);
+                break;
             case "Logs":
                 for (int i = 0; i < 4; i++) g.DrawLine(pen, x + 1, y + 2 + i * s * 0.28f, x + (i % 2 == 0 ? s - 1 : s * 0.65f), y + 2 + i * s * 0.28f);
                 break;

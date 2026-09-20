@@ -20,13 +20,14 @@ public sealed partial class LauncherForm
     private const int SideW = 208, ContentX = SideW + 24, ContentW = W - SideW - 48;
     private const int ToolbarY = 90, ContentY = 148, ConsoleTop = H - 178;
 
-    private enum Page { Home, Menu, Designer, Online, Logs, Settings }
-    private static readonly string[] PageTitles = { "Home", "Menu", "Designer", "Online", "Logs", "Settings" };
+    private enum Page { Home, Menu, Designer, Spotify, Online, Logs, Settings }
+    private static readonly string[] PageTitles = { "Home", "Menu", "Designer", "Spotify", "Online", "Logs", "Settings" };
     private static readonly string[] PageSubtitles =
     {
         "Inject the menu into Gorilla Tag and see what's going on.",
         "Which version of the menu you'll get, and your local test build.",
         "Design your own menu look, then pick it in game under Theme.",
+        "Sign in to Spotify so the menu can show and control your music.",
         "Your Asset Bay server: health and free-tier usage.",
         "Everything the launcher did this session.",
         "Launcher preferences.",
@@ -85,6 +86,7 @@ public sealed partial class LauncherForm
         BuildHome();
         BuildMenuPage();
         BuildDesignerPage();
+        BuildSpotifyPage();
         BuildOnlinePage();
         BuildSettingsPage();
 
